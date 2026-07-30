@@ -203,14 +203,19 @@ def _walk_notes(root: Path, suffixes: frozenset[str]) -> list[Path]:
     out: list[Path] = []
     total = 0
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in suffixes:
-            continue
-        parents = path.relative_to(root).parts[:-1]
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in parents):
-            continue
-        if path.name.startswith("."):
-            continue
+        # One guard around every stat-backed call: a file that vanishes mid-walk
+        # is skipped whichever of them notices first. `is_file()` reaches the
+        # filesystem through `Path.stat` on some python versions and `os.stat`
+        # on others, so catching only around the explicit `stat()` left the
+        # skip version-dependent.
         try:
+            if not path.is_file() or path.suffix.lower() not in suffixes:
+                continue
+            parents = path.relative_to(root).parts[:-1]
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in parents):
+                continue
+            if path.name.startswith("."):
+                continue
             total += path.stat().st_size
         except OSError:
             continue

@@ -345,7 +345,7 @@ def load_joplin(path: Path) -> list[Note]:
                         f"{_MAX_VAULT_BYTES // (1024 * 1024)} MiB import ceiling"
                     )
                 handle = tar.extractfile(member)
-                if handle is None:
+                if handle is None:  # pragma: no cover - isfile() guarantees a stream
                     continue
                 text = handle.read(_MAX_NOTE_BYTES).decode("utf-8", errors="replace")
                 note = _parse_joplin_note(text, Path(member.name).stem)

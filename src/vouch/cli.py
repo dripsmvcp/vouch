@@ -41,6 +41,7 @@ from . import install_adapter as install_mod
 from . import lifecycle as life
 from . import metrics as metrics_mod
 from . import migrations as migrations_mod
+from . import note_import as note_import_mod
 from . import notify as notify_mod
 from . import pins as pins_mod
 from . import pr_cache as prc_mod
@@ -116,6 +117,7 @@ def _cli_errors() -> Iterator[None]:
         migrations_mod.MigrationError,
         chatgpt_import_mod.ChatGPTImportError,
         codex_rollout_mod.CodexRolloutError,
+        note_import_mod.NoteImportError,
         pins_mod.PinError,
     ) as e:
         raise click.ClickException(str(e)) from e
@@ -4407,6 +4409,146 @@ def import_chatgpt_cmd(
         _echo(f"  • {pid}  {row['title']}")
     if not dry_run and (report["imported"] or report["updated"]):
         _echo("run `vouch review` to decide.")
+
+
+# --- import: note vaults (issue #612) --------------------------------------
+
+
+@cli.group(name="import")
+def import_group() -> None:
+    """Import an existing note vault as PENDING proposals.
+
+    One page per note, cited to a source registered from the note's own bytes —
+    so claims extracted from it quote real offsets and their receipts verify.
+    Re-running is idempotent: unchanged notes are no-ops, changed ones refresh
+    their pending proposal, decided ones stay decided. Nothing is approved.
+    """
+
+
+def _import_vault_cmd(kind: str, path: Path, limit: int | None, max_claims: int,
+                      dry_run: bool, as_json: bool) -> None:
+    store = _load_store()
+    with _cli_errors():
+        report = note_import_mod.import_vault(
+            store, kind, path, limit=limit, max_claims=max_claims,
+            dry_run=dry_run, generated_at=datetime.now(UTC).isoformat(),
+        )
+    if as_json:
+        _emit_json(report)
+        return
+    verb = "would import" if dry_run else "imported"
+    _echo(
+        f"{report['notes']} note(s) — {verb} {report['imported']} new, "
+        f"{report['updated']} updated, {report['skipped']} skipped"
+    )
+    if report["claims"] or report["relations"]:
+        _echo(
+            f"  + {report['claims']} claim(s), {report['relations']} link "
+            f"relation(s) proposed"
+        )
+    for row in report["rows"]:
+        if row["action"] == "skipped":
+            continue
+        pid = row.get("proposal_id") or "(dry-run)"
+        _echo(f"  • {pid}  {row['title']}")
+    if not dry_run and (report["imported"] or report["updated"]):
+        _echo("run `vouch review` to decide.")
+
+
+def _vault_options(fn: Any) -> Any:
+    """The four flags every `vouch import <kind>` subcommand shares."""
+    fn = click.option(
+        "--json", "as_json", is_flag=True, help="Machine-readable report."
+    )(fn)
+    fn = click.option(
+        "--dry-run", is_flag=True, help="Parse and report; file nothing."
+    )(fn)
+    fn = click.option(
+        "--max-claims", "max_claims", type=int, default=0, show_default=True,
+        help="File up to N receipt-backed claims per note (0 = pages only).",
+    )(fn)
+    fn = click.option(
+        "--limit", type=int, default=None,
+        help="Import at most N notes, in sorted order (resumable).",
+    )(fn)
+    return fn
+
+
+@import_group.command("obsidian")
+@click.argument("vault", type=click.Path(exists=True, path_type=Path))
+@_vault_options
+def import_obsidian_cmd(
+    vault: Path, limit: int | None, max_claims: int, dry_run: bool, as_json: bool
+) -> None:
+    """Import an Obsidian vault (frontmatter, wikilinks, folder structure)."""
+    _import_vault_cmd("obsidian", vault, limit, max_claims, dry_run, as_json)
+
+
+@import_group.command("md")
+@click.argument("folder", type=click.Path(exists=True, path_type=Path))
+@_vault_options
+def import_md_cmd(
+    folder: Path, limit: int | None, max_claims: int, dry_run: bool, as_json: bool
+) -> None:
+    """Import a plain markdown folder."""
+    _import_vault_cmd("md", folder, limit, max_claims, dry_run, as_json)
+
+
+@import_group.command("joplin")
+@click.argument("export_path", type=click.Path(exists=True, path_type=Path))
+@_vault_options
+def import_joplin_cmd(
+    export_path: Path, limit: int | None, max_claims: int, dry_run: bool, as_json: bool
+) -> None:
+    """Import a Joplin export — a .jex archive or the folder it unpacks to."""
+    _import_vault_cmd("joplin", export_path, limit, max_claims, dry_run, as_json)
+
+
+@import_group.command("notes")
+@click.argument("export_path", type=click.Path(exists=True, path_type=Path))
+@_vault_options
+def import_apple_notes_cmd(
+    export_path: Path, limit: int | None, max_claims: int, dry_run: bool, as_json: bool
+) -> None:
+    """Import an Apple Notes export (a folder of .html/.txt per note)."""
+    _import_vault_cmd("notes", export_path, limit, max_claims, dry_run, as_json)
+
+
+@import_group.command("keep")
+@click.argument("export_path", type=click.Path(exists=True, path_type=Path))
+@_vault_options
+def import_keep_cmd(
+    export_path: Path, limit: int | None, max_claims: int, dry_run: bool, as_json: bool
+) -> None:
+    """Import a Google Keep (Takeout) export — the folder or the .zip."""
+    _import_vault_cmd("keep", export_path, limit, max_claims, dry_run, as_json)
+
+
+@import_group.command("chatgpt")
+@click.argument(
+    "export_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@click.option(
+    "--limit", type=int, default=None,
+    help="Import at most N conversations, in export order.",
+)
+@click.option("--dry-run", is_flag=True, help="Parse and report; file nothing.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable report.")
+@click.pass_context
+def import_chatgpt_sub_cmd(
+    ctx: click.Context,
+    export_path: Path, limit: int | None, dry_run: bool, as_json: bool
+) -> None:
+    """Import a ChatGPT history export (alias of `vouch import-chatgpt`).
+
+    The conversation importer predates this group; it lives here too so the
+    one `vouch import <kind>` surface covers every source. The flat
+    `vouch import-chatgpt` stays for back-compat.
+    """
+    ctx.invoke(
+        import_chatgpt_cmd, export_path=export_path, limit=limit,
+        dry_run=dry_run, as_json=as_json,
+    )
 
 
 # --- auto-pr: open N mergeable PRs against any github repo -----------------

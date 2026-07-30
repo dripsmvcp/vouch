@@ -7,6 +7,26 @@ All notable changes to vouch are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **note-vault importers — arrive with years of notes already written** (#612):
+  `vouch import obsidian <vault>`, plus `joplin` (folder or `.jex`), `notes`
+  (apple notes html/txt export), `keep` (google takeout folder or `.zip`), and
+  `md` (a plain markdown folder). One PENDING page proposal per note, each
+  cited to a source registered from **the note's own bytes** — which is the
+  thing an embedding-based importer structurally cannot offer: claims extracted
+  from an imported note quote real offsets, so their receipts verify and the
+  knowledge is citable rather than paraphrased. Frontmatter is carried into
+  source metadata; wikilinks (and joplin's `:/id` links) become `references`
+  relation proposals, but only where the target resolves to a note that was
+  actually imported. Re-running is idempotent on a stable per-note identity
+  derived from the origin's own identifier — unchanged notes are no-ops,
+  changed ones refresh their pending proposal in place, decided ones stay
+  decided — so a large vault imports in `--limit` slices and resumes. Claims
+  are opt-in and bounded through the existing density-selection knob
+  (`--max-claims`, default 0 = pages only), so ten thousand notes cannot become
+  ten thousand pending claims. `--dry-run` previews. Nothing is approved: an
+  import is a proposal firehose, not a write. `vouch import chatgpt` now also
+  exists as an alias so one `vouch import <kind>` surface covers every source;
+  the flat `vouch import-chatgpt` stays for back-compat.
 - **explicit pins — a working set that always enters the pack** (#615):
   `vouch pin <id>` / `vouch pins list` / `vouch unpin <id>`. Pinned claims and
   pages lead every context pack instead of having to win the query each turn,

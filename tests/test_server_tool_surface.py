@@ -446,6 +446,36 @@ def test_kb_audit_accepts_a_viewer_scope(store: KBStore) -> None:
     assert server.kb_audit(project="acme-example", agent="claude-code") is not None
 
 
+# --- experts ------------------------------------------------------------
+
+
+def test_kb_experts_ranks_entities(store: KBStore) -> None:
+    src = store.put_source(b"evidence")
+    store.put_entity(Entity(id="jwt", name="JWT", type="concept"))
+    store.put_claim(
+        Claim(id="c1", text="jwt rotation", evidence=[src.id], entities=["jwt"])
+    )
+    rows = server.kb_experts("JWT")["experts"]
+    assert [r["entity_id"] for r in rows] == ["jwt"]
+
+
+def test_kb_experts_honours_the_viewer_scope(store: KBStore) -> None:
+    # The scope filter is the whole point of issue #684 — a private claim must
+    # not reach a viewer through this tool either.
+    from vouch.models import ArtifactScope, Visibility
+
+    src = store.put_source(b"evidence")
+    store.put_entity(Entity(id="jwt", name="JWT", type="concept"))
+    store.put_claim(
+        Claim(
+            id="secret", text="jwt rotation", evidence=[src.id], entities=["jwt"],
+            scope=ArtifactScope(visibility=Visibility.PRIVATE, agent="alice"),
+        )
+    )
+    assert server.kb_experts("JWT", agent="bob")["experts"] == []
+    assert server.kb_experts("JWT", agent="alice")["experts"]
+
+
 # --- bundles ------------------------------------------------------------
 
 

@@ -87,6 +87,45 @@ def load_split_config(store: KBStore) -> SplitConfig:
     )
 
 
+def _merge_observations(
+    buffered: list[dict[str, Any]], extra: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Union of buffer and reconstructed observations, in timestamp order.
+
+    With `capture.realtime` on, both sources describe the same tool calls;
+    `tool_use_id` identifies the event across them, so the pair counts once
+    against `min_observations` and appears once in the rendered activity list.
+    Records without an id (older buffers, hosts that omit it) fall back to
+    (tool, summary, cmd) identity.
+    """
+    if not extra:
+        return buffered
+    if not buffered:
+        return extra
+    seen_ids = {
+        str(o["tool_use_id"]) for o in buffered if o.get("tool_use_id")
+    }
+    seen_keys = {
+        (str(o.get("tool", "")), str(o.get("summary", "")), str(o.get("cmd", "")))
+        for o in buffered
+    }
+    merged = list(buffered)
+    for obs in extra:
+        use_id = obs.get("tool_use_id")
+        if use_id and str(use_id) in seen_ids:
+            continue
+        key = (
+            str(obs.get("tool", "")), str(obs.get("summary", "")), str(obs.get("cmd", ""))
+        )
+        if not use_id and key in seen_keys:
+            continue
+        merged.append(obs)
+    # Stable on ties so a buffer record and its reconstructed twin, or two
+    # calls inside one assistant turn (identical timestamp), keep their order.
+    merged.sort(key=lambda o: float(o.get("ts", 0.0) or 0.0))
+    return merged
+
+
 def summarize(
     store: KBStore,
     session_id: str,
@@ -99,6 +138,7 @@ def summarize(
     config: capture.CaptureConfig | None = None,
     origin: Path | None = None,
     sources: list[str] | None = None,
+    extra_observations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Roll a session buffer into PENDING page proposals. Never approves.
 
@@ -115,10 +155,17 @@ def summarize(
     `sources` are source ids the mechanical page cites (the session-answers
     source `capture.finalize` registers). A cited session page clears the
     admission gate's uncited-diary rule on its own merits.
+
+    `extra_observations` are observations reconstructed outside the buffer —
+    `capture.finalize` passes the ones it reads back out of the transcript.
+    They are merged with the buffer's, so this stays the one rollup whether
+    `capture.realtime` is on, off, or was toggled mid-session.
     """
     cfg = config or capture.load_config(store)
     path = capture.buffer_path(store, session_id)
-    observations = capture._read_observations(path)
+    observations = _merge_observations(
+        capture._read_observations(path), extra_observations or []
+    )
     if not cfg.enabled:
         return {"captured": len(observations), "summary_proposal_id": None,
                 "summary_proposal_ids": [], "mode": "skipped", "skipped": "disabled",

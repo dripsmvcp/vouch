@@ -6,6 +6,27 @@ All notable changes to vouch are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **real-time capture is opt-in; the per-tool-call hook is gone** (#602): new
+  config key `capture.realtime`, default **false**. `vouch capture observe` is
+  a no-op when it is off, and the shipped claude-code adapter no longer
+  registers a `PostToolUse` hook at all — on a busy session that was hundreds
+  of python process spawns, each loading the kb store, to append a line to an
+  ephemeral buffer whose only consumer is the once-per-session rollup. The
+  `Stop` → `vouch capture answer` hook goes with it: under the default
+  `capture.answer_mode: session` it could never file anything. `SessionStart`,
+  `UserPromptSubmit` and `SessionEnd` are the three that carry weight.
+  `capture.finalize` now reconstructs the session's tool activity from the
+  transcript it already reads (`capture.observations_from_transcript`), so
+  summaries keep their "files modified / activity / notable commands" sections
+  and the `min_observations` gate keeps counting real work — the transcript is
+  the receipt-bearing artifact and strictly richer than per-tool-call hearsay.
+  Set `capture.realtime: true` to restore the buffer as a crash-resistant
+  backstop; buffered and reconstructed records are merged on `tool_use_id`, so
+  a call recorded by both still counts once. No stored artifact changes shape,
+  and installed hosts keep their current `settings.json` until they re-run
+  `vouch install-mcp`.
+
 ### Added
 - **explicit pins — a working set that always enters the pack** (#615):
   `vouch pin <id>` / `vouch pins list` / `vouch unpin <id>`. Pinned claims and

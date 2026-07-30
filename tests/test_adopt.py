@@ -422,7 +422,7 @@ def test_fallback_session_summary_records_its_origin(
     origin.mkdir()
     for i in range(3):
         cap.observe(personal, "sum-1", tool="Edit", summary=f"edited f{i}.py",
-                    now=float(i))
+                    now=float(i), config=cap.CaptureConfig(realtime=True))
     result = cap.finalize(personal, "sum-1", cwd=origin, project=origin.name,
                           origin=origin)
     # finalize still returns the id even though the uncited session rollup is

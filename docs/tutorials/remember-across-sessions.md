@@ -44,9 +44,11 @@ Done — 7 written, 0 appended, 0 merged, 0 skipped
 
 That's the whole integration: `.mcp.json` gives Claude Code the `kb_*`
 tools, `CLAUDE.md` teaches it the propose-with-evidence protocol, and
-`.claude/settings.json` wires the hooks — `PostToolUse` harvests the
-session into a scratch buffer, `SessionEnd` rolls it into one pending
-summary, and `SessionStart` injects all approved knowledge
+`.claude/settings.json` wires the hooks — `SessionEnd` rolls the
+session's tool activity into one pending summary (read back out of the
+transcript, so nothing fires per tool call), `UserPromptSubmit` injects
+context for the prompt you just typed, and `SessionStart` injects all
+approved knowledge
 (`vouch recall`) into every new session before your first message. From
 here on, you just talk to Claude Code.
 

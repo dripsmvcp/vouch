@@ -78,11 +78,11 @@ vouch install-mcp claude-code
 That writes `.mcp.json` (so the agent can `kb.search` / `kb.context` the KB for
 cited answers) **and** `.claude/settings.json`, which registers:
 
-- a `PostToolUse` hook (`vouch capture observe`) that harvests each tool call
-  into a gitignored scratch buffer,
-- a `SessionEnd` hook (`vouch capture finalize`) that rolls the buffer plus a
-  `git diff` backstop into **one pending session-summary page** — mechanically,
-  no LLM, never auto-approved,
+- a `SessionEnd` hook (`vouch capture finalize`) that reads the session's tool
+  calls back out of the transcript and rolls them, plus a `git diff` backstop,
+  into **one pending session-summary page** — mechanically, no LLM, never
+  auto-approved (set `capture.realtime: true` to also keep the per-tool-call
+  scratch buffer as a crash backstop),
 - a `SessionStart` hook that runs `vouch recall` (injecting approved knowledge)
   and nudges any pending summaries.
 
@@ -94,9 +94,9 @@ is actual `vouch` output (paths shortened; trimmed where marked `…`).
 **Session 1.** A Claude Code session maps the codebase, reads
 `CONTRIBUTING.md`, and works issue #212 (a connection-pool leak): a test run
 fails along the way, the fix and the regression test the merge bar demands
-land, and the changelog gets its entry. The `PostToolUse` hook harvests each
-of those tool calls as they happen; at session end the `SessionEnd` hook rolls
-them into one pending page:
+land, and the changelog gets its entry. At session end the `SessionEnd` hook
+reads those tool calls back out of the transcript and rolls them into one
+pending page:
 
 ```console
 $ vouch pending

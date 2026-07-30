@@ -44,6 +44,12 @@ DEFAULT_DEDUP_WINDOW_SECONDS = 60.0
 # "turn": legacy behaviour — claims filed from each answer on every Stop hook.
 DEFAULT_ANSWER_MODE = "session"
 _ANSWER_MODES = frozenset({"session", "turn"})
+# Real-time observation is off by default (issue #602). The buffer's only
+# consumer is the once-per-session rollup, and `finalize` reconstructs the
+# same tool activity from the transcript it already reads — which is the
+# receipt-bearing artifact, and strictly richer than per-call hearsay. Turn
+# this on to keep the buffer as a crash-resistant backstop.
+DEFAULT_REALTIME = False
 CAPTURE_ACTOR = "vouch-capture"
 CAPTURE_PAGE_TYPE = "session"
 
@@ -54,6 +60,7 @@ class CaptureConfig:
     min_observations: int = DEFAULT_MIN_OBSERVATIONS
     dedup_window_seconds: float = DEFAULT_DEDUP_WINDOW_SECONDS
     answer_mode: str = DEFAULT_ANSWER_MODE
+    realtime: bool = DEFAULT_REALTIME
 
 
 def load_config(store: KBStore) -> CaptureConfig:
@@ -77,6 +84,7 @@ def load_config(store: KBStore) -> CaptureConfig:
             raw.get("dedup_window_seconds", DEFAULT_DEDUP_WINDOW_SECONDS)
         ),
         answer_mode=answer_mode,
+        realtime=coerce_bool(raw.get("realtime", DEFAULT_REALTIME), DEFAULT_REALTIME),
     )
 
 
@@ -128,9 +136,15 @@ def observe(
     config: CaptureConfig | None = None,
     tool_use_id: str | None = None,
 ) -> bool:
-    """Append one observation to the session buffer. Returns True if written."""
+    """Append one observation to the session buffer. Returns True if written.
+
+    A no-op unless ``capture.realtime`` is on. Off (the default) the buffer has
+    no consumer worth a process spawn per tool call — ``finalize`` reconstructs
+    the same activity from the transcript. The check comes before any file I/O
+    so the hook, if one is still wired, costs nothing beyond the config read.
+    """
     cfg = config or load_config(store)
-    if not cfg.enabled:
+    if not cfg.enabled or not cfg.realtime:
         return False
     # Mask credentials before anything is persisted: the buffer rolls into a
     # committed session page and the append-only audit log, so a secret that
@@ -205,6 +219,117 @@ def summarize_tool(
         out["summary"] = f"Fetched: {str(target)[:60]}"
     else:  # Task
         out["summary"] = f"{tool_name} completed"
+    return out
+
+
+def _parse_ts(raw: object) -> float:
+    """Transcript ISO timestamp -> epoch seconds; 0.0 when absent/unparseable."""
+    if not isinstance(raw, str) or not raw:
+        return 0.0
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _tool_result_text(block: dict[str, Any]) -> str:
+    """Flatten a tool_result block's content into the text summarize_tool reads.
+
+    The host writes ``content`` as a bare string on some turns and a list of
+    typed blocks on others; ``is_error`` is the authoritative failure signal
+    when present, so it is folded into the text the Bash branch greps.
+    """
+    parts: list[str] = []
+    if block.get("is_error"):
+        parts.append("error")
+    content = block.get("content")
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+    return "\n".join(parts)
+
+
+def observations_from_transcript(
+    transcript_path: Path, *, max_observations: int = 1000
+) -> list[dict[str, Any]]:
+    """Reconstruct the session's tool activity from a host transcript.
+
+    Same observation shape ``observe`` writes to the buffer, built from the
+    artifact ``finalize`` already reads — so the summary keeps its "files
+    modified / activity / notable commands" sections, and the
+    ``min_observations`` gate keeps counting real work, with the per-tool-call
+    hook switched off (issue #602). ``codex_rollout`` does the same thing for
+    codex rollouts; this is the claude-transcript door onto one rollup.
+
+    Each ``tool_use`` block is paired with the ``tool_result`` carrying its id,
+    so the Bash branch still distinguishes a failed command from a clean one.
+    Returns ``[]`` for an unreadable transcript — reconstruction is a best
+    effort that must never cost the session its summary.
+    """
+    try:
+        rows = transcript_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    calls: list[tuple[str, str, dict[str, Any], float]] = []
+    results: dict[str, str] = {}
+    for line in rows:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        msg = obj.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        ts = _parse_ts(obj.get("timestamp"))
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            kind = block.get("type")
+            if kind == "tool_use":
+                use_id = str(block.get("id") or "")
+                name = block.get("name")
+                tool_input = block.get("input")
+                if not name or not isinstance(name, str):
+                    continue
+                calls.append(
+                    (use_id, name, tool_input if isinstance(tool_input, dict) else {}, ts)
+                )
+            elif kind == "tool_result":
+                use_id = str(block.get("tool_use_id") or "")
+                if use_id:
+                    results[use_id] = _tool_result_text(block)
+
+    out: list[dict[str, Any]] = []
+    for use_id, name, tool_input, ts in calls:
+        obs = summarize_tool(name, tool_input, results.get(use_id, ""))
+        if obs is None:
+            continue
+        # Masked here for the same reason `observe` masks: this record rolls
+        # into a committed session page and the append-only audit log.
+        record: dict[str, Any] = {
+            "ts": ts,
+            "tool": obs["tool"],
+            "summary": mask_secrets(str(obs["summary"])),
+        }
+        if use_id:
+            record["tool_use_id"] = use_id
+        if obs.get("files"):
+            record["files"] = obs["files"]
+        if obs.get("cmd"):
+            record["cmd"] = mask_secrets(str(obs["cmd"]))
+        out.append(record)
+        if len(out) >= max_observations:
+            break
     return out
 
 
@@ -556,6 +681,11 @@ def finalize(
     answer memory happens: the full transcript is handed to
     ``capture_session_answers`` once, instead of a Stop hook filing claims
     on every turn. A claim-extraction failure never loses the summary.
+
+    Tool activity is reconstructed from the same transcript
+    (``observations_from_transcript``) and merged with whatever the buffer
+    holds, so the summary survives ``capture.realtime`` being off — which is
+    the default (issue #602).
     """
     from . import session_split  # deferred: breaks the capture<->session_split cycle
     cfg = config or load_config(store)
@@ -578,10 +708,15 @@ def finalize(
         source_id = answers.get("source")
         if source_id:
             sources = [str(source_id)]
+    transcript_observations = (
+        observations_from_transcript(transcript_path)
+        if transcript_path is not None
+        else []
+    )
     result = session_split.summarize(
         store, session_id, intent=intent, cwd=cwd, project=project,
         generated_at=generated_at, mode=mode, config=cfg, origin=origin,
-        sources=sources,
+        sources=sources, extra_observations=transcript_observations,
     )
     if answers is not None:
         result["answers"] = answers

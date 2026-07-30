@@ -100,6 +100,11 @@ def _starter_config() -> dict[str, Any]:
             # answer memory: "session" extracts claims once at SessionEnd from
             # the full transcript; "turn" files claims on every Stop hook.
             "answer_mode": "session",
+            # real-time observation: off means `capture observe` is a no-op and
+            # finalize reconstructs tool activity from the transcript instead of
+            # a per-tool-call buffer. Turn on to keep the buffer as a
+            # crash-resistant backstop, at one process spawn per tool call.
+            "realtime": False,
             "split": {
                 # llm topical split for large sessions; llm_cmd falls back to
                 # compile.llm_cmd when null. see session_split.py.

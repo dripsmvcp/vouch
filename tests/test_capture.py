@@ -5,14 +5,28 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from vouch import capture as cap
 from vouch.storage import KBStore, _starter_config
 
 
+def _enable_realtime(kb: KBStore) -> KBStore:
+    """Opt the KB into the real-time buffer.
+
+    `capture.realtime` defaults to off (issue #602), so every test that
+    exercises `observe` and the buffer it feeds has to say so explicitly. The
+    default-off behaviour has its own tests below.
+    """
+    loaded = yaml.safe_load(kb.config_path.read_text(encoding="utf-8")) or {}
+    loaded.setdefault("capture", {})["realtime"] = True
+    kb.config_path.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+    return kb
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> KBStore:
-    return KBStore.init(tmp_path)
+    return _enable_realtime(KBStore.init(tmp_path))
 
 
 def test_load_config_defaults(store: KBStore) -> None:
@@ -540,10 +554,17 @@ def test_adapter_settings_wires_capture_hooks() -> None:
                 out.append(h.get("command", ""))
         return out
 
-    assert any("capture observe" in c for c in commands("PostToolUse"))
     assert any("capture finalize" in c for c in commands("SessionEnd"))
     assert any("capture banner" in c for c in commands("SessionStart"))
     assert any("capture finalize-all" in c for c in commands("SessionStart"))
+    assert any("context-hook" in c for c in commands("UserPromptSubmit"))
+    # issue #602: the two per-event hooks are gone. PostToolUse spawned a
+    # process per tool call to feed a buffer whose only consumer is the
+    # SessionEnd rollup, which now reconstructs the same activity from the
+    # transcript; Stop could never file anything under the default
+    # `capture.answer_mode: session`.
+    assert "PostToolUse" not in hooks
+    assert "Stop" not in hooks
 
 
 def test_capture_finalize_all_cmd_with_old_buffers(tmp_path: Path, monkeypatch) -> None:
@@ -707,8 +728,8 @@ def test_is_stale_buffer_with_exact_boundary(tmp_path):
 
 
 def _make_store(tmp_path: Path) -> KBStore:
-    """Helper to create a KBStore for testing."""
-    return KBStore.init(tmp_path)
+    """Helper to create a KBStore for testing (real-time buffer on)."""
+    return _enable_realtime(KBStore.init(tmp_path))
 
 
 def test_finalize_all_except_skips_current_session(tmp_path):
@@ -955,6 +976,7 @@ def _fallback_machine(tmp_path_factory, monkeypatch):
     root = hub.personal_kb_root()
     assert root is not None
     personal = KBStore.init(root)
+    _enable_realtime(personal)
     _turn_mode(personal)
     hub.register_kb(root, role="personal", actor="t")
     hub.set_personal_fallback(root, True)
@@ -1086,3 +1108,129 @@ def test_fallback_off_captures_nowhere(
         input=_json.dumps({"session_id": "fb-5", "cwd": str(nowhere)}),
     )
     assert "run `vouch init` here to enable durable memory" in banner.output
+
+
+# --- real-time capture is opt-in (issue #602) -------------------------------
+
+
+def _tool_transcript(tmp_path: Path, name: str = "tools.jsonl") -> Path:
+    """A transcript with four tool calls, one of them a failed Bash."""
+    transcript = tmp_path / name
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "fix the parser"}]}},
+        {"type": "assistant", "timestamp": "2026-07-30T10:00:00Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "id": "t1", "name": "Read",
+              "input": {"file_path": "/repo/src/parser.py"}},
+             {"type": "tool_use", "id": "t2", "name": "Edit",
+              "input": {"file_path": "/repo/src/parser.py"}},
+         ]}},
+        {"type": "user", "timestamp": "2026-07-30T10:00:01Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+             {"type": "tool_result", "tool_use_id": "t2", "content": "ok"},
+         ]}},
+        {"type": "assistant", "timestamp": "2026-07-30T10:00:02Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "id": "t3", "name": "Bash",
+              "input": {"command": "pytest tests/test_parser.py"}},
+             {"type": "tool_use", "id": "t4", "name": "TodoWrite", "input": {}},
+         ]}},
+        {"type": "user", "timestamp": "2026-07-30T10:00:03Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "t3", "is_error": True,
+              "content": [{"type": "text", "text": "1 failed"}]},
+         ]}},
+    ]
+    transcript.write_text(
+        "\n".join(_json.dumps(entry) for entry in lines), encoding="utf-8"
+    )
+    return transcript
+
+
+def test_realtime_defaults_off(tmp_path: Path) -> None:
+    kb = KBStore.init(tmp_path)
+    assert cap.load_config(kb).realtime is False
+    assert _starter_config()["capture"]["realtime"] is False
+
+
+def test_realtime_quoted_true_enables(tmp_path: Path) -> None:
+    kb = KBStore.init(tmp_path)
+    kb.config_path.write_text('capture:\n  realtime: "true"\n', encoding="utf-8")
+    assert cap.load_config(kb).realtime is True
+
+
+def test_observe_is_a_noop_when_realtime_is_off(tmp_path: Path) -> None:
+    # The point of the default: no buffer file, so no per-tool-call write.
+    kb = KBStore.init(tmp_path)
+    assert cap.observe(kb, "s1", tool="Read", summary="Read a.py") is False
+    assert not cap.buffer_path(kb, "s1").exists()
+
+
+def test_observations_from_transcript_reconstructs_tool_activity(
+    tmp_path: Path,
+) -> None:
+    obs = cap.observations_from_transcript(_tool_transcript(tmp_path))
+    assert [o["tool"] for o in obs] == ["Read", "Edit", "Bash"]  # TodoWrite unobserved
+    assert [o["tool_use_id"] for o in obs] == ["t1", "t2", "t3"]
+    assert obs[0]["summary"] == "Read parser.py"
+    assert obs[1]["files"] == ["/repo/src/parser.py"]
+    # is_error on the tool_result is what makes this a failure, not the text
+    assert obs[2]["summary"].startswith("Command failed: pytest")
+    assert obs[2]["cmd"] == "pytest tests/test_parser.py"
+    assert obs[0]["ts"] < obs[2]["ts"]
+
+
+def test_observations_from_transcript_masks_secrets(tmp_path: Path) -> None:
+    transcript = tmp_path / "secret.jsonl"
+    transcript.write_text(_json.dumps({
+        "type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash",
+             "input": {"command": "curl -H 'Authorization: Bearer sk-abcdef1234567890'"}},
+        ]}}), encoding="utf-8")
+    obs = cap.observations_from_transcript(transcript)
+    assert "sk-abcdef1234567890" not in obs[0]["cmd"]
+    assert "sk-abcdef1234567890" not in obs[0]["summary"]
+
+
+def test_observations_from_transcript_survives_a_bad_path(tmp_path: Path) -> None:
+    assert cap.observations_from_transcript(tmp_path / "nope.jsonl") == []
+
+
+def test_finalize_summarizes_from_the_transcript_with_realtime_off(
+    tmp_path: Path,
+) -> None:
+    """The compatibility case the issue calls out: with no buffer, the
+    min_observations gate has to count reconstructed activity or a session
+    touching fewer than 3 files would file no summary at all."""
+    kb = KBStore.init(tmp_path / "proj")
+    assert cap.load_config(kb).realtime is False
+    res = cap.finalize(
+        kb, "s-reconstructed", transcript_path=_tool_transcript(tmp_path),
+    )
+    assert res["captured"] == 3
+    assert res["summary_proposal_id"] is not None
+    body = kb.get_proposal(res["summary_proposal_id"]).payload["body"]
+    assert "Read parser.py" in body
+    assert "Command failed: pytest" in body
+
+
+def test_finalize_counts_a_buffered_call_once_when_realtime_is_on(
+    tmp_path: Path,
+) -> None:
+    """Both sources describe the same tool calls when realtime is on;
+    tool_use_id is what keeps the pair from being counted twice."""
+    kb = _enable_realtime(KBStore.init(tmp_path / "proj"))
+    transcript = _tool_transcript(tmp_path)
+    for use_id, tool, summary in (
+        ("t1", "Read", "Read parser.py"),
+        ("t2", "Edit", "Edited parser.py"),
+    ):
+        assert cap.observe(
+            kb, "s-both", tool=tool, summary=summary, tool_use_id=use_id, now=1.0
+        )
+    res = cap.finalize(kb, "s-both", transcript_path=transcript)
+    assert res["captured"] == 3  # 2 buffered + only the unseen Bash call
+    body = kb.get_proposal(res["summary_proposal_id"]).payload["body"]
+    assert body.count("Read parser.py") == 1

@@ -144,7 +144,8 @@ def test_load_transcript_degrades_to_observations(
 ) -> None:
     monkeypatch.setenv("VOUCH_CLAUDE_PROJECTS_DIR", str(store.kb_dir / "none"))
     sid = "99999999-9999-9999-9999-999999999999"
-    capture.observe(store, sid, tool="Edit", summary="Edited x.go")
+    capture.observe(store, sid, tool="Edit", summary="Edited x.go",
+                    config=capture.CaptureConfig(realtime=True))
     out = transcript.load_transcript(store, sid)
     assert out["available"] is False
     assert out["observations"][0]["tool"] == "Edit"

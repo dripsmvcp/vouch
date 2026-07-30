@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from vouch import session_split
 from vouch.session_split import SplitConfig, load_split_config
@@ -14,7 +15,14 @@ from vouch.storage import KBStore
 
 @pytest.fixture
 def store(tmp_path: Path) -> KBStore:
-    return KBStore.init(tmp_path)
+    # `capture.realtime` is off by default (issue #602); these tests seed the
+    # buffer through `capture.observe`, so they opt in. The default-off path
+    # (transcript reconstruction) is covered in tests/test_capture.py.
+    kb = KBStore.init(tmp_path)
+    loaded = yaml.safe_load(kb.config_path.read_text(encoding="utf-8")) or {}
+    loaded.setdefault("capture", {})["realtime"] = True
+    kb.config_path.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+    return kb
 
 
 def test_split_config_defaults(store: KBStore) -> None:
@@ -60,8 +68,14 @@ def test_split_config_quoted_false_enabled_does_not_enable(store: KBStore) -> No
 
 def _observe(store: KBStore, sid: str, n: int, tool: str = "Edit") -> None:
     from vouch import capture
+
+    # Explicit config: several callers overwrite config.yaml to set another
+    # `capture.*` key, which drops the fixture's `realtime: true`.
+    cfg = capture.CaptureConfig(realtime=True)
     for i in range(n):
-        capture.observe(store, sid, tool=tool, summary=f"{tool} file{i}.py", now=float(i))
+        capture.observe(
+            store, sid, tool=tool, summary=f"{tool} file{i}.py", now=float(i), config=cfg
+        )
 
 
 def test_below_min_skips_and_deletes_buffer(store: KBStore) -> None:

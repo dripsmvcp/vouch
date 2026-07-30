@@ -58,6 +58,12 @@ def _assistant(text: str) -> dict:
     return {"type": "assistant", "message": _msg("assistant", text)}
 
 
+# `capture.realtime` is off by default (issue #602) and these tests seed the
+# buffer directly, so they say so explicitly rather than through config.yaml —
+# several of them overwrite it to set a `review:` key.
+_REALTIME = cap.CaptureConfig(realtime=True)
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> KBStore:
     return KBStore.init(tmp_path / "kb")
@@ -387,7 +393,8 @@ def test_finalize_page_cites_session_source(store: KBStore, tmp_path: Path) -> N
     """The rollup page cites the answers source, so it clears admission."""
     tp = _transcript(tmp_path, [_user(QUESTION), _assistant(ANSWER)])
     for i in range(3):
-        cap.observe(store, "s1", tool="Edit", summary=f"Edit f{i}.py", now=float(i))
+        cap.observe(store, "s1", tool="Edit", summary=f"Edit f{i}.py", now=float(i),
+                    config=_REALTIME)
     res = cap.finalize(store, "s1", cwd=None, transcript_path=tp)
     assert res["answers"]["captured"] is True
     src_id = res["answers"]["source"]
@@ -401,7 +408,8 @@ def test_finalize_recites_source_on_refinalize(store: KBStore, tmp_path: Path) -
     tp = _transcript(tmp_path, [_user(QUESTION), _assistant(ANSWER)])
     cap.capture_session_answers(store, "s1", tp)
     for i in range(3):
-        cap.observe(store, "s1", tool="Edit", summary=f"Edit f{i}.py", now=float(i))
+        cap.observe(store, "s1", tool="Edit", summary=f"Edit f{i}.py", now=float(i),
+                    config=_REALTIME)
     res = cap.finalize(store, "s1", cwd=None, transcript_path=tp)
     assert res["answers"]["skipped"] == "already-captured"
     prop = store.get_proposal(res["summary_proposal_id"])
@@ -459,7 +467,8 @@ def test_finalize_supersedes_updated_claims(store: KBStore, tmp_path: Path) -> N
     d2 = tmp_path / "s2"
     d2.mkdir()
     for i in range(3):
-        cap.observe(store, "s2", tool="Edit", summary=f"Edit f{i}.py", now=float(i))
+        cap.observe(store, "s2", tool="Edit", summary=f"Edit f{i}.py", now=float(i),
+                    config=_REALTIME)
     res = cap.finalize(
         store, "s2", cwd=None,
         transcript_path=_transcript(d2, [_user("region?"), _assistant(NEW_ANSWER)]),

@@ -2226,14 +2226,35 @@ def new_cmd(
     help="ranking weight: count | recency | citation (unknown falls back to count).",
 )
 @click.option("--json", "as_json", is_flag=True, help="emit the ranking as JSON.")
+@click.option("--project", default=None, help="Viewer project for scope filtering.")
+@click.option("--agent", default=None, help="Viewer agent for scope filtering.")
 def experts_cmd(
-    topic: str, limit: int, min_claims: int, weight: str, as_json: bool
+    topic: str,
+    limit: int,
+    min_claims: int,
+    weight: str,
+    as_json: bool,
+    project: str | None,
+    agent: str | None,
 ) -> None:
     """Rank entities by evidence density on TOPIC (read-only)."""
     from .experts import rank_experts
+    from .scoping import viewer_from
 
     store = _load_store()
-    rows = rank_experts(store, topic, limit=limit, min_claims=min_claims, weight=weight)
+    viewer = viewer_from(
+        config_path=store.config_path,
+        project=project,
+        agent=agent,
+    )
+    rows = rank_experts(
+        store,
+        topic,
+        limit=limit,
+        min_claims=min_claims,
+        weight=weight,
+        viewer=viewer,
+    )
     if as_json:
         _emit_json({"experts": rows})
         return

@@ -294,13 +294,27 @@ def kb_experts(
     limit: int = 10,
     min_claims: int = 1,
     weight: str = "count",
+    *,
+    project: str | None = None,
+    agent: str | None = None,
 ) -> dict[str, Any]:
-    """Rank entities by evidence density on a topic (read-only)."""
+    """Rank entities by evidence density on a topic (read-only, viewer-scoped)."""
     from .experts import rank_experts
 
+    store = _store()
+    viewer = viewer_from(
+        config_path=store.config_path,
+        project=project,
+        agent=agent,
+    )
     return {
         "experts": rank_experts(
-            _store(), topic, limit=limit, min_claims=min_claims, weight=weight
+            store,
+            topic,
+            limit=limit,
+            min_claims=min_claims,
+            weight=weight,
+            viewer=viewer,
         )
     }
 

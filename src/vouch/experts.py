@@ -15,6 +15,7 @@ from typing import Any
 from . import index_db
 from .models import Claim, ClaimStatus, utcnow
 from .salience import _substring_entity_ids
+from .scoping import ViewerContext, is_visible, scoped_fetch_limit, viewer_from
 from .storage import KBStore
 
 # A superseded / archived / redacted claim is not live evidence and must never
@@ -44,6 +45,7 @@ def rank_experts(
     limit: int = 10,
     min_claims: int = 1,
     weight: str = "count",
+    viewer: ViewerContext | None = None,
 ) -> list[dict[str, Any]]:
     """Return entities ranked by evidence density on ``topic``.
 
@@ -51,17 +53,32 @@ def rank_experts(
     value falls back to ``count`` (never raises), matching the defensive-config
     style used elsewhere. Ordered by descending score with a stable tie-break
     on ``entity_id``.
+
+    Claims the viewer cannot retrieve are excluded — ``viewer`` defaults to the
+    config-resolved context, so a KB read with no explicit viewer reads as its
+    own project (see ``scoping.viewer_from``).
     """
     if weight not in _VALID_WEIGHTS:
         weight = "count"
+
+    # Scope-filter before aggregating, for both halves of the row. The ids in
+    # `top_claim_ids` are an invitation to go read those claims, so an
+    # out-of-scope id is exactly what scoping exists to withhold; and every
+    # count/score is computed over the same set, so filtering only the ids
+    # would leave an entity outranking its peers on evidence this caller can
+    # never see. Same defect, same fix as `detect_themes` (issue #657).
+    if viewer is None:
+        viewer = viewer_from(config_path=store.config_path)
 
     entities = store.list_entities()
     by_id = {ent.id: ent for ent in entities}
     topic_entity_ids = set(_substring_entity_ids(entities, topic))
 
     # Candidate claims: FTS hits on the topic, plus every claim that references
-    # an entity whose name/alias matches the topic.
-    fetch = max(limit * 5, 50)
+    # an entity whose name/alias matches the topic. Over-fetch when the viewer
+    # is scoped — otherwise a KB whose top hits are mostly private starves the
+    # candidate pool of the claims this viewer can actually see.
+    fetch = scoped_fetch_limit(max(limit * 5, 50), viewer)
     fts_claim_ids = {
         cid
         for kind, cid, _snip, _score in index_db.search(store.kb_dir, topic, limit=fetch)
@@ -76,6 +93,8 @@ def rank_experts(
 
     for claim in store.list_claims():
         if claim.status in _EXCLUDED_STATUSES:
+            continue
+        if not is_visible(claim.scope, viewer):
             continue
         matched = claim.id in fts_claim_ids or bool(
             set(claim.entities) & topic_entity_ids

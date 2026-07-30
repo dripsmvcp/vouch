@@ -14,7 +14,15 @@ import pytest
 
 from vouch.experts import rank_experts
 from vouch.jsonl_server import handle_request
-from vouch.models import Claim, ClaimStatus, Entity, EntityType
+from vouch.models import (
+    ArtifactScope,
+    Claim,
+    ClaimStatus,
+    Entity,
+    EntityType,
+    Visibility,
+)
+from vouch.scoping import ViewerContext
 from vouch.storage import KBStore
 
 
@@ -149,3 +157,111 @@ def test_jsonl_experts_envelope_missing_topic_errors(store: KBStore, monkeypatch
     assert resp["id"] == "e2"
     assert resp["ok"] is False
     assert resp["error"]["code"] == "missing_param"
+
+
+def _seed_private(store: KBStore) -> list[str]:
+    """One public claim plus three private-to-alice claims on the same entity."""
+    src = store.put_source(b"evidence-bytes")
+    store.put_entity(
+        Entity(id="acme-example", name="acme-example", type=EntityType.COMPANY)
+    )
+    store.put_claim(
+        Claim(
+            id="pub",
+            text="postgres at acme-example",
+            evidence=[src.id],
+            entities=["acme-example"],
+        )
+    )
+    private_ids = []
+    for i in range(3):
+        cid = f"secret-{i}"
+        store.put_claim(
+            Claim(
+                id=cid,
+                text=f"postgres secret {i} at acme-example",
+                evidence=[src.id],
+                entities=["acme-example"],
+                scope=ArtifactScope(visibility=Visibility.PRIVATE, agent="alice"),
+            )
+        )
+        private_ids.append(cid)
+    return private_ids
+
+
+def test_private_claims_never_reach_a_foreign_viewer(store: KBStore) -> None:
+    # Regression (issue #684): rank_experts filtered on status only, so a
+    # private claim inflated every number in the row *and* had its id handed
+    # back under top_claim_ids to a viewer that cannot retrieve it.
+    private_ids = _seed_private(store)
+    viewer = ViewerContext(project=None, agent="bob")
+    rows = rank_experts(store, "acme-example", viewer=viewer)
+    row = next(r for r in rows if r["entity_id"] == "acme-example")
+    assert row["claim_count"] == 1  # the ranking itself, not just the ids
+    assert not set(row["top_claim_ids"]) & set(private_ids)
+    assert row["top_claim_ids"] == ["pub"]
+
+
+def test_min_claims_applies_to_the_visible_count(store: KBStore) -> None:
+    # The threshold must not be cleared on evidence the caller can never read.
+    _seed_private(store)
+    viewer = ViewerContext(project=None, agent="bob")
+    assert rank_experts(store, "acme-example", min_claims=2, viewer=viewer) == []
+    owner = ViewerContext(project=None, agent="alice")
+    rows = rank_experts(store, "acme-example", min_claims=2, viewer=owner)
+    row = next(r for r in rows if r["entity_id"] == "acme-example")
+    assert row["claim_count"] == 4
+
+
+def test_owner_still_sees_their_own_private_evidence(store: KBStore) -> None:
+    private_ids = _seed_private(store)
+    rows = rank_experts(
+        store, "acme-example", viewer=ViewerContext(project=None, agent="alice")
+    )
+    row = next(r for r in rows if r["entity_id"] == "acme-example")
+    assert row["claim_count"] == 4
+    assert set(row["top_claim_ids"]) <= {"pub", *private_ids}
+
+
+def test_cross_project_claims_are_excluded(store: KBStore) -> None:
+    src = store.put_source(b"z")
+    store.put_entity(Entity(id="p", name="proj-x", type=EntityType.PROJECT))
+    store.put_claim(
+        Claim(
+            id="mine",
+            text="proj-x here",
+            evidence=[src.id],
+            entities=["p"],
+            scope=ArtifactScope(visibility=Visibility.PROJECT, project="ours"),
+        )
+    )
+    store.put_claim(
+        Claim(
+            id="theirs",
+            text="proj-x elsewhere",
+            evidence=[src.id],
+            entities=["p"],
+            scope=ArtifactScope(visibility=Visibility.PROJECT, project="theirs"),
+        )
+    )
+    rows = rank_experts(store, "proj-x", viewer=ViewerContext(project="ours"))
+    row = next(r for r in rows if r["entity_id"] == "p")
+    assert row["claim_count"] == 1
+    assert row["top_claim_ids"] == ["mine"]
+
+
+def test_jsonl_experts_honors_viewer_scope_params(store: KBStore, monkeypatch) -> None:
+    # The transport must be able to say who is asking, like kb.search does.
+    private_ids = _seed_private(store)
+    monkeypatch.chdir(store.root)
+    resp = handle_request(
+        {
+            "id": "e3",
+            "method": "kb.experts",
+            "params": {"topic": "acme-example", "agent": "bob"},
+        }
+    )
+    assert resp["ok"] is True
+    row = next(r for r in resp["result"]["experts"] if r["entity_id"] == "acme-example")
+    assert row["claim_count"] == 1
+    assert not set(row["top_claim_ids"]) & set(private_ids)

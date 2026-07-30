@@ -203,14 +203,17 @@ def _load_cfg(store: KBStore) -> dict:
 
 def _h_experts(p: dict) -> dict:
     from .experts import rank_experts
+    from .scoping import viewer_from_params
 
+    s = _store()
     return {
         "experts": rank_experts(
-            _store(),
+            s,
             p["topic"],
             limit=int(p.get("limit", 10)),
             min_claims=int(p.get("min_claims", 1)),
             weight=p.get("weight", "count"),
+            viewer=viewer_from_params(s, p),
         )
     }
 

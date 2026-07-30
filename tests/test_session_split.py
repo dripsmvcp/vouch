@@ -476,3 +476,30 @@ def test_cited_session_page_clears_admission(store: KBStore, tmp_path: Path) -> 
     assert prop.payload["sources"] == [src.id]
     assert prop.status is ProposalStatus.PENDING
     assert prop.decided_by is None
+
+
+# --- merging buffered and reconstructed observations (issue #602) -----------
+
+
+def test_merge_prefers_tool_use_id_then_falls_back_to_content() -> None:
+    buffered = [
+        {"ts": 2.0, "tool": "Read", "summary": "Read a.py", "tool_use_id": "t1"},
+        {"ts": 3.0, "tool": "Edit", "summary": "Edited b.py"},  # no id: older buffer
+    ]
+    extra = [
+        # same call, same id -> one record
+        {"ts": 1.0, "tool": "Read", "summary": "Read a.py", "tool_use_id": "t1"},
+        # same call, no id on either side -> deduped on tool/summary/cmd
+        {"ts": 1.5, "tool": "Edit", "summary": "Edited b.py"},
+        # genuinely new
+        {"ts": 4.0, "tool": "Bash", "summary": "Ran: pytest", "tool_use_id": "t9"},
+    ]
+    merged = session_split._merge_observations(buffered, extra)
+    assert [o.get("tool_use_id") or o["tool"] for o in merged] == ["t1", "Edit", "t9"]
+    assert [o["ts"] for o in merged] == [2.0, 3.0, 4.0]  # timestamp order
+
+
+def test_merge_short_circuits_when_either_side_is_empty() -> None:
+    buffered = [{"ts": 1.0, "tool": "Read", "summary": "Read a.py"}]
+    assert session_split._merge_observations(buffered, []) is buffered
+    assert session_split._merge_observations([], buffered) is buffered

@@ -1234,3 +1234,42 @@ def test_finalize_counts_a_buffered_call_once_when_realtime_is_on(
     assert res["captured"] == 3  # 2 buffered + only the unseen Bash call
     body = kb.get_proposal(res["summary_proposal_id"]).payload["body"]
     assert body.count("Read parser.py") == 1
+
+
+def test_reconstruction_skips_every_malformed_row(tmp_path: Path) -> None:
+    """A transcript is the host's file, not ours — one bad row must not cost
+    the session its summary, so every shape below is skipped, not raised on."""
+    transcript = tmp_path / "messy.jsonl"
+    transcript.write_text(
+        "\n".join([
+            "",                                    # blank line
+            "   ",                                 # whitespace-only line
+            "{not json at all",                    # undecodable
+            '"a bare string"',                     # valid json, not a dict
+            _json.dumps({"type": "assistant", "message": "not-a-dict"}),
+            _json.dumps({"type": "assistant", "message": {"content": "not-a-list"}}),
+            _json.dumps({
+                "type": "assistant", "timestamp": "not-a-timestamp",
+                "message": {"content": [
+                    "a bare string block",         # not a dict
+                    {"type": "tool_use", "id": "x1"},               # no name
+                    {"type": "tool_use", "id": "x2", "name": 7},    # name not a str
+                    {"type": "text", "text": "prose"},              # not a tool call
+                    {"type": "tool_result", "content": "orphan"},   # no tool_use_id
+                    {"type": "tool_use", "id": "x3", "name": "Read",
+                     "input": {"file_path": "/repo/a.py"}},
+                ]},
+            }),
+        ]),
+        encoding="utf-8",
+    )
+    obs = cap.observations_from_transcript(transcript)
+    assert [o["tool_use_id"] for o in obs] == ["x3"]
+    assert obs[0]["ts"] == 0.0  # unparseable timestamp degrades, never raises
+
+
+def test_reconstruction_respects_its_ceiling(tmp_path: Path) -> None:
+    obs = cap.observations_from_transcript(
+        _tool_transcript(tmp_path), max_observations=2
+    )
+    assert len(obs) == 2

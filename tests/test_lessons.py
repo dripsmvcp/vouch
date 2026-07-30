@@ -7,6 +7,7 @@ ever blocking or merging. Everything else here is behaviour around those.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -262,3 +263,111 @@ def test_cli_exposes_the_lesson_commands() -> None:
     assert {
         "lessons", "mark-lesson-followed", "lesson-follow-through",
     } <= set(cli.commands)
+
+
+# --- the surfaces, exercised rather than merely registered -----------------
+
+
+def _cli(store: KBStore, args: list[str]):
+    from click.testing import CliRunner
+
+    from vouch.cli import cli
+
+    return CliRunner().invoke(cli, args, env={"VOUCH_KB_PATH": str(store.kb_dir)})
+
+
+def test_cli_lessons_listing_reports_follow_through(store: KBStore) -> None:
+    assert "no lessons found" in _cli(store, ["lessons"]).output
+
+    lesson = _lesson(store)
+    fresh = _cli(store, ["lessons"])
+    assert fresh.exit_code == 0, fresh.output
+    assert RULE in fresh.output
+    assert "no observations" in fresh.output  # nothing recorded yet
+
+    marked = _cli(store, ["mark-lesson-followed", lesson.id, "--context", "pre-push"])
+    assert marked.exit_code == 0, marked.output
+    assert "followed 1, not followed 0" in marked.output
+    _cli(store, ["mark-lesson-followed", lesson.id, "--not-followed"])
+
+    listed = _cli(store, ["lessons"])
+    assert "followed 50% of 2" in listed.output
+
+    stats = _cli(store, ["lesson-follow-through", lesson.id])
+    assert stats.exit_code == 0, stats.output
+    assert json.loads(stats.output)["observations"] == 2
+
+
+def test_cli_include_retired_shows_a_superseded_rule(store: KBStore) -> None:
+    lesson = _lesson(store)
+    stored = store.get_claim(lesson.id)
+    stored.status = ClaimStatus.ARCHIVED
+    store.update_claim(stored)
+    assert "no lessons found" in _cli(store, ["lessons"]).output
+    assert RULE in _cli(store, ["lessons", "--include-retired"]).output
+
+
+def test_cli_marking_an_unknown_lesson_fails_cleanly(store: KBStore) -> None:
+    result = _cli(store, ["mark-lesson-followed", "no-such-claim"])
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_mcp_lesson_tools_round_trip(
+    store: KBStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vouch import server
+
+    monkeypatch.chdir(store.root)
+    lesson = _lesson(store)
+    listed = server.kb_list_lessons()
+    assert [item["id"] for item in listed["items"]] == [lesson.id]
+    assert server.kb_list_lessons(include_retired=True)["items"]
+
+    marked = server.kb_mark_lesson_followed(lesson.id, context="pre-push")
+    assert marked["followed"] == 1
+    assert server.kb_lesson_follow_through(lesson.id)["observations"] == 1
+
+
+def test_mcp_marking_an_unknown_lesson_raises_value_error(
+    store: KBStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The MCP contract: a host sees ValueError, never LessonError.
+    from vouch import server
+
+    monkeypatch.chdir(store.root)
+    with pytest.raises(ValueError):
+        server.kb_mark_lesson_followed("no-such-claim")
+
+
+# --- config fallbacks ------------------------------------------------------
+
+
+def test_repeat_threshold_falls_back_on_anything_unusable(store: KBStore) -> None:
+    default = lessons_mod.DEFAULT_REPEAT_THRESHOLD
+    for text in (
+        "review: [unclosed\n",          # unparseable
+        "just-a-string\n",              # not a mapping
+        "review: not-a-mapping\n",      # review is not a mapping
+        "review:\n  approver_role: x\n",  # key absent
+        "review:\n  lesson_repeat_threshold: highish\n",  # not a number
+    ):
+        store.config_path.write_text(text, encoding="utf-8")
+        assert lessons_mod.repeat_threshold(store) == default
+    store.config_path.write_text(
+        "review:\n  lesson_repeat_threshold: 0.9\n", encoding="utf-8"
+    )
+    assert lessons_mod.repeat_threshold(store) == 0.9
+
+
+def test_the_repeat_guard_ignores_an_empty_proposal(store: KBStore) -> None:
+    _lesson(store)
+    assert lessons_mod.repeat_warnings(store, "   ") == []
+
+
+def test_the_repeat_guard_can_exclude_the_claim_being_edited(store: KBStore) -> None:
+    """Re-proposing the same rule as an edit of itself must not warn that it
+    duplicates itself."""
+    lesson = _lesson(store)
+    assert lessons_mod.repeat_warnings(store, RULE)
+    assert lessons_mod.repeat_warnings(store, RULE, exclude_claim_id=lesson.id) == []

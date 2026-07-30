@@ -134,6 +134,7 @@ HOT_MEMORY_COVERED: frozenset[str] = frozenset({
     "kb.list_relations",
     "kb.list_sources",
     "kb.list_pending",
+    "kb.list_lessons",
 })
 
 # Explicit exclusions for ``test_hot_memory_universal_coverage``.
@@ -183,6 +184,11 @@ HOT_MEMORY_EXCLUDED: dict[str, str] = {
     "kb.archive": "lifecycle — mutates durable state",
     "kb.confirm": "lifecycle — mutates durable state",
     "kb.cite": "lifecycle — mutates durable state",
+    "kb.mark_lesson_followed": (
+        "append-only usage observation — records that a lesson was applied, "
+        "edits no artifact and returns no claim payload"
+    ),
+    "kb.lesson_follow_through": "derived counts — no claim payload",
     "kb.source_verify": "write path — verification intake",
     "kb.session_start": "session control — not a KB read",
     "kb.session_end": "session control — not a KB read",

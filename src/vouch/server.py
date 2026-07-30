@@ -23,6 +23,7 @@ from . import audit, bundle, health, mcp_profiles, volunteer_context
 from . import compile as compile_mod
 from . import digest as digest_mod
 from . import hot_memory as hot_mod
+from . import lessons as lessons_mod
 from . import lifecycle as life
 from . import metrics as metrics_mod
 from . import salience as salience_mod
@@ -815,6 +816,44 @@ def kb_propose_delete(
     except (ProposalError, ArtifactNotFoundError, ValueError) as e:
         raise ValueError(str(e)) from e
     return _proposal_response(pr, dry_run)
+
+
+@mcp.tool()
+def kb_list_lessons(include_retired: bool = False) -> dict[str, Any]:
+    """List approved procedural rules (lesson / workflow / warning), newest first."""
+    store = _store()
+    items = [
+        c.model_dump(mode="json")
+        for c in lessons_mod.list_lessons(store, include_retired=include_retired)
+    ]
+    return hot_mod.attach_hot_memory(  # type: ignore[no-any-return]
+        items, store, query=None, list_envelope=True,
+    )
+
+
+@mcp.tool()
+def kb_mark_lesson_followed(
+    claim_id: str, followed: bool = True, context: str | None = None
+) -> dict[str, Any]:
+    """Record that a surfaced lesson was (or wasn't) applied in this turn.
+
+    Appends an append-only observation to the audit log and edits nothing —
+    not the lesson's text, status, or confidence. The observation feeds
+    kb.effectiveness, so a rule nobody follows stops looking load-bearing.
+    """
+    try:
+        return lessons_mod.mark_followed(
+            _store(), claim_id=claim_id, followed=followed,
+            actor=_agent(), context=context,
+        )
+    except lessons_mod.LessonError as e:
+        raise ValueError(str(e)) from e
+
+
+@mcp.tool()
+def kb_lesson_follow_through(claim_id: str) -> dict[str, Any]:
+    """Followed / not-followed counts and rate for one lesson."""
+    return lessons_mod.follow_through(_store(), claim_id=claim_id)
 
 
 def _proposal_response(result, dry_run: bool) -> dict[str, Any]:

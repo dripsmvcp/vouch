@@ -32,6 +32,7 @@ from . import audit, bundle, health, volunteer_context
 from . import compile as compile_mod
 from . import digest as digest_mod
 from . import hot_memory as hot_mod
+from . import lessons as lessons_mod
 from . import lifecycle as life
 from . import metrics as metrics_mod
 from . import salience as salience_mod
@@ -560,6 +561,33 @@ def _h_propose_delete(p: dict) -> dict:
     }
 
 
+def _h_list_lessons(p: dict) -> dict:
+    store = _store()
+    items = [
+        c.model_dump(mode="json")
+        for c in lessons_mod.list_lessons(
+            store, include_retired=bool(p.get("include_retired", False)),
+        )
+    ]
+    return hot_mod.attach_hot_memory(  # type: ignore[no-any-return]
+        items, store, query=None, list_envelope=True,
+    )
+
+
+def _h_mark_lesson_followed(p: dict) -> dict:
+    return lessons_mod.mark_followed(
+        _store(),
+        claim_id=p["claim_id"],
+        followed=bool(p.get("followed", True)),
+        actor=_agent(),
+        context=p.get("context"),
+    )
+
+
+def _h_lesson_follow_through(p: dict) -> dict:
+    return lessons_mod.follow_through(_store(), claim_id=p["claim_id"])
+
+
 def _h_approve(p: dict) -> dict:
     a = approve(_store(), p["proposal_id"], approved_by=_agent(),
                 reason=p.get("reason"),
@@ -973,6 +1001,9 @@ HANDLERS: dict[str, Callable[[dict], Any]] = {
     "kb.contradict": _h_contradict,
     "kb.archive": _h_archive,
     "kb.confirm": _h_confirm,
+    "kb.list_lessons": _h_list_lessons,
+    "kb.mark_lesson_followed": _h_mark_lesson_followed,
+    "kb.lesson_follow_through": _h_lesson_follow_through,
     "kb.clear_claims": _h_clear_claims,
     "kb.wipe_dead_refs": _h_wipe_dead_refs,
     "kb.cite": _h_cite,

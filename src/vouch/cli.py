@@ -38,6 +38,7 @@ from . import fetch as fetch_mod
 from . import hub as hub_mod
 from . import inbox as inbox_mod
 from . import install_adapter as install_mod
+from . import lessons as lessons_mod
 from . import lifecycle as life
 from . import metrics as metrics_mod
 from . import migrations as migrations_mod
@@ -2566,6 +2567,62 @@ def notify_test(url: str, secret: str | None) -> None:
     click.echo("delivered" if ok else "delivery failed")
     if not ok:
         sys.exit(1)
+
+
+# --- lessons --------------------------------------------------------------
+
+
+@cli.command(name="lessons")
+@click.option("--include-retired", is_flag=True, help="also show superseded/archived rules")
+def list_lessons_cmd(include_retired: bool) -> None:
+    """List approved procedural rules (lesson / workflow / warning)."""
+    store = _load_store()
+    found = lessons_mod.list_lessons(store, include_retired=include_retired)
+    if not found:
+        click.echo("no lessons found")
+        return
+    for claim in found:
+        stats = lessons_mod.follow_through(store, claim_id=claim.id)
+        rate = (
+            "no observations" if stats["follow_rate"] is None
+            else f"followed {stats['follow_rate']:.0%} of {stats['observations']}"
+        )
+        click.echo(f"{claim.id:50} [{claim.type.value}] {claim.text}  ({rate})")
+
+
+@cli.command(name="mark-lesson-followed")
+@click.argument("claim_id")
+@click.option(
+    "--followed/--not-followed",
+    default=True,
+    show_default=True,
+    help="whether the rule was actually applied",
+)
+@click.option("--context", default=None, help="what was happening when it applied")
+def mark_lesson_followed_cmd(
+    claim_id: str, followed: bool, context: str | None
+) -> None:
+    """Record that a lesson was (or wasn't) applied. Appends only."""
+    store = _load_store()
+    with _cli_errors():
+        stats = lessons_mod.mark_followed(
+            store, claim_id=claim_id, followed=followed,
+            actor=_whoami(), context=context,
+        )
+    click.echo(
+        f"{claim_id}: followed {stats['followed']}, "
+        f"not followed {stats['not_followed']}"
+    )
+
+
+@cli.command(name="lesson-follow-through")
+@click.argument("claim_id")
+def lesson_follow_through_cmd(claim_id: str) -> None:
+    """Show followed / not-followed counts for one lesson."""
+    store = _load_store()
+    with _cli_errors():
+        stats = lessons_mod.follow_through(store, claim_id=claim_id)
+    click.echo(json.dumps(stats, indent=2))
 
 
 # --- lifecycle ------------------------------------------------------------

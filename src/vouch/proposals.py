@@ -17,7 +17,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from . import admission, audit, index_db
+from . import admission, audit, index_db, lessons
 from .config_coerce import coerce_bool
 from .models import (
     ArtifactScope,
@@ -263,6 +263,20 @@ def propose_claim(
     except ImportError:
         # Base install has no numpy / embeddings extra — propose still works.
         pass
+
+    # Repeat guard for procedural rules (#428). Runs *after* the embedding
+    # path and in addition to it, not instead: the embedding warnings need the
+    # [embeddings] extra, and a guard that silently disappears on a base
+    # install is the case where duplicate rules actually accumulate. Advisory
+    # only — a near-restatement is filed and flagged, never blocked.
+    if lessons.is_lesson(Claim(**payload)):
+        already = {w.get("artifact_id") for w in warnings}
+        warnings.extend(
+            w for w in lessons.repeat_warnings(
+                store, claim_text, exclude_claim_id=exclude_claim,
+            )
+            if w["artifact_id"] not in already
+        )
 
     proposal = _file_proposal(
         store, kind=ProposalKind.CLAIM, payload=payload,

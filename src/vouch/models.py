@@ -48,6 +48,12 @@ class ClaimType(StrEnum):
     OBSERVATION = "observation"
     QUESTION = "question"
     WARNING = "warning"
+    # A procedural rule the project expects to be followed ("run mypy before
+    # pushing"). Distinct from WORKFLOW/WARNING, which describe how something
+    # works or what to watch for, in that a lesson is the kind of claim whose
+    # value is measured by whether it actually changed behaviour — see
+    # `vouch.lessons` for the follow-through signal.
+    LESSON = "lesson"
 
 
 class ClaimStatus(StrEnum):

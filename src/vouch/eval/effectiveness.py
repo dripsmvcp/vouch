@@ -55,15 +55,19 @@ DEFAULT_WINDOW = "90d"
 Z_95 = 1.959963984540054
 
 # Audit verbs that end a session well: the reviewer kept what they saw.
-GOOD_EVENTS = frozenset({"claim.confirm"})
+# `lesson.followed` (#428) is the most direct good outcome there is — a rule
+# the KB surfaced actually changed what happened in the session.
+GOOD_EVENTS = frozenset({"claim.confirm", "lesson.followed"})
 
 # Verbs that end it badly: something surfaced turned out to be wrong, stale,
-# or unwanted.
+# or unwanted. A lesson explicitly recorded as *not* followed is the same
+# signal from the other side: it was surfaced and it did not earn its place.
 BAD_EVENTS = frozenset({
     "claim.contradict",
     "claim.supersede",
     "claim.archive",
     "claim.redact",
+    "lesson.not_followed",
 })
 
 # Proposal decisions carry the kind in the middle of the verb

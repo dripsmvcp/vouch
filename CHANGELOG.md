@@ -7,6 +7,26 @@ All notable changes to vouch are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **lessons as a typed artifact with follow-through tracking** (#428):
+  `ClaimType` carried `workflow` and `warning` — the vocabulary of a procedural
+  rule — but nothing recorded whether a surfaced rule was ever *followed*, so a
+  load-bearing convention and a stale one nobody heeds looked identical, and
+  nothing warned at propose time when a near-identical rule already existed.
+  Adds `ClaimType.LESSON` plus two narrow loops in `src/vouch/lessons.py`.
+  `kb.mark_lesson_followed` appends an append-only observation
+  (`lesson.followed` / `lesson.not_followed`) to `audit.log.jsonl` and edits
+  nothing — not the lesson's text, status, or confidence — so a lost or
+  replayed observation can only make an estimate noisier, never corrupt
+  knowledge. Those verbs are classified by `kb.effectiveness`, which is what
+  the signal exists for. A propose-time repeat guard surfaces a strongly
+  overlapping approved lesson loudly in the propose response without blocking
+  or merging; it is lexical (token Jaccard, threshold
+  `review.lesson_repeat_threshold`, default 0.6) so it still runs on a base
+  install rather than silently vanishing without the `[embeddings]` extra, and
+  composes with the existing embedding warnings rather than replacing them.
+  `workflow` and `warning` claims count as lessons too, so existing KBs don't
+  have to re-type their rules. `vouch lessons`, `vouch mark-lesson-followed`,
+  `vouch lesson-follow-through`, plus MCP and JSONL.
 - **explicit pins — a working set that always enters the pack** (#615):
   `vouch pin <id>` / `vouch pins list` / `vouch unpin <id>`. Pinned claims and
   pages lead every context pack instead of having to win the query each turn,

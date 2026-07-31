@@ -7,6 +7,25 @@ All notable changes to vouch are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **conversation and memory-export importers** (#431): `vouch import chat-json
+  <export>` normalises the common JSON chat shapes — openai's branching
+  `mapping` tree (delegated to the existing chatgpt importer), claude.ai's
+  `chat_messages`, and the generic `messages: [{role, content}]` almost
+  everything else emits, from a file, a `.jsonl`, or a `.zip` — into one
+  PENDING page per conversation, cited to a per-conversation source.
+  `vouch import memory-export <dump>` reads a prior memory tool's dump (JSON
+  array, object of records, JSONL, or one memory per line) and files each
+  memory as a claim quoting its own source verbatim, so the receipt verifies
+  and the imported fact is citable rather than asserted. `markdown-vault` is
+  registered as an alias of the note-vault importer, so the three formats the
+  issue names are all reachable from one surface. Two guards keep an import
+  from becoming a reviewer's problem: `--max-proposals` caps a whole run and
+  the report says when the cap was hit (rerunning continues where it left
+  off), and candidates an approved claim or a pending proposal already cover
+  are dropped — lexically first, since a base install has no `[embeddings]`
+  extra, with the embedding hits (#147) folded in on top when available.
+  `--dry-run` reports without enqueuing, `--max-claims` files receipt-backed
+  claims from a conversation's answers, and nothing here calls `approve()`.
 - **note-vault importers — arrive with years of notes already written** (#612):
   `vouch import obsidian <vault>`, plus `joplin` (folder or `.jex`), `notes`
   (apple notes html/txt export), `keep` (google takeout folder or `.zip`), and

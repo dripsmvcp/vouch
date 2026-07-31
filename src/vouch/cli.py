@@ -33,6 +33,7 @@ from . import chatgpt_import as chatgpt_import_mod
 from . import codex_rollout as codex_rollout_mod
 from . import compile as compile_mod
 from . import contradictions as contradictions_mod
+from . import conversation_import as conversation_import_mod
 from . import digest as digest_mod
 from . import fetch as fetch_mod
 from . import hub as hub_mod
@@ -118,6 +119,7 @@ def _cli_errors() -> Iterator[None]:
         chatgpt_import_mod.ChatGPTImportError,
         codex_rollout_mod.CodexRolloutError,
         note_import_mod.NoteImportError,
+        conversation_import_mod.ConversationImportError,
         pins_mod.PinError,
     ) as e:
         raise click.ClickException(str(e)) from e
@@ -4522,6 +4524,113 @@ def import_keep_cmd(
 ) -> None:
     """Import a Google Keep (Takeout) export — the folder or the .zip."""
     _import_vault_cmd("keep", export_path, limit, max_claims, dry_run, as_json)
+
+
+def _export_options(fn: Any) -> Any:
+    """The flags every conversation/memory export subcommand shares."""
+    fn = click.option(
+        "--json", "as_json", is_flag=True, help="Machine-readable report."
+    )(fn)
+    fn = click.option(
+        "--dry-run", is_flag=True, help="Parse and report; file nothing."
+    )(fn)
+    fn = click.option(
+        "--no-dedup", "no_dedup", is_flag=True,
+        help="File every candidate, even one the KB already covers.",
+    )(fn)
+    fn = click.option(
+        "--max-proposals", "max_proposals", type=int, default=None,
+        help="Cap the whole run; the report says when the cap was hit.",
+    )(fn)
+    fn = click.option(
+        "--limit", type=int, default=None,
+        help="Consider at most N entries, in export order.",
+    )(fn)
+    return fn
+
+
+def _echo_import_report(report: dict[str, Any], unit: str, dry_run: bool) -> None:
+    verb = "would import" if dry_run else "imported"
+    _echo(
+        f"{report[unit]} {unit[:-1]}(s) — {verb} {report['imported']} new, "
+        f"{report.get('updated', 0)} updated, {report['skipped']} skipped"
+    )
+    if report.get("claims"):
+        _echo(f"  + {report['claims']} receipt-backed claim(s) proposed")
+    if report["capped"]:
+        _echo(
+            f"  ! stopped at --max-proposals {report['max_proposals']} — rerun "
+            f"to continue where this left off"
+        )
+    if not dry_run and (report["imported"] or report.get("updated")):
+        _echo("run `vouch review` to decide.")
+
+
+@import_group.command("chat-json")
+@click.argument(
+    "export_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@click.option(
+    "--max-claims", "max_claims", type=int, default=0, show_default=True,
+    help="File up to N receipt-backed claims per conversation (0 = pages only).",
+)
+@_export_options
+def import_chat_json_cmd(
+    export_path: Path, limit: int | None, max_proposals: int | None,
+    no_dedup: bool, dry_run: bool, as_json: bool, max_claims: int,
+) -> None:
+    """Import a JSON chat export (claude.ai, gemini, perplexity, openai, …).
+
+    One PENDING page per conversation, cited to a per-conversation source.
+    Re-importing is idempotent. Nothing is approved.
+    """
+    store = _load_store()
+    with _cli_errors():
+        report = conversation_import_mod.import_conversations(
+            store, export_path, limit=limit, max_proposals=max_proposals,
+            max_claims=max_claims, dry_run=dry_run, dedup=not no_dedup,
+            generated_at=datetime.now(UTC).isoformat(),
+        )
+    if as_json:
+        _emit_json(report)
+        return
+    _echo_import_report(report, "conversations", dry_run)
+
+
+@import_group.command("memory-export")
+@click.argument(
+    "export_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@_export_options
+def import_memory_export_cmd(
+    export_path: Path, limit: int | None, max_proposals: int | None,
+    no_dedup: bool, dry_run: bool, as_json: bool,
+) -> None:
+    """Import a prior memory tool's dump as PENDING claim proposals.
+
+    Each memory becomes a claim quoting its own source verbatim, so the
+    receipt verifies and the imported fact is citable rather than asserted.
+    """
+    store = _load_store()
+    with _cli_errors():
+        report = conversation_import_mod.import_memories(
+            store, export_path, limit=limit, max_proposals=max_proposals,
+            dry_run=dry_run, dedup=not no_dedup,
+        )
+    if as_json:
+        _emit_json(report)
+        return
+    _echo_import_report(report, "memories", dry_run)
+
+
+@import_group.command("markdown-vault")
+@click.argument("folder", type=click.Path(exists=True, path_type=Path))
+@_vault_options
+def import_markdown_vault_cmd(
+    folder: Path, limit: int | None, max_claims: int, dry_run: bool, as_json: bool
+) -> None:
+    """Import a markdown folder (alias of `vouch import md`)."""
+    _import_vault_cmd("md", folder, limit, max_claims, dry_run, as_json)
 
 
 @import_group.command("chatgpt")

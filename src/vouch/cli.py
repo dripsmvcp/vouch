@@ -27,6 +27,7 @@ import yaml
 
 from . import __version__, bundle, health, hub_client, volunteer_context
 from . import adopt as adopt_mod
+from . import agents as agents_mod
 from . import audit as audit_mod
 from . import capture as capture_mod
 from . import chatgpt_import as chatgpt_import_mod
@@ -119,6 +120,7 @@ def _cli_errors() -> Iterator[None]:
         migrations_mod.MigrationError,
         chatgpt_import_mod.ChatGPTImportError,
         codex_rollout_mod.CodexRolloutError,
+        agents_mod.AgentError,
         pins_mod.PinError,
     ) as e:
         raise click.ClickException(str(e)) from e
@@ -3888,6 +3890,130 @@ def graph(session: str | None, fmt: str) -> None:
     with _cli_errors():
         text = prov_mod.graph_export(store, session=session, fmt=fmt)
     click.echo(text, nl=False)
+
+
+@cli.group(name="agents")
+def agents_group() -> None:
+    """Which agents can write to this KB, and what each one did."""
+
+
+@agents_group.command("register")
+@click.argument("name")
+@click.option("--subject", required=True,
+              help="The token's auth subject (vouch agents subject <token>).")
+@click.option("--scope", "scopes", multiple=True,
+              help="Advisory scope to record (repeatable).")
+@click.option("--note", default=None, help="What this agent is for.")
+def agents_register(name: str, subject: str, scopes: tuple[str, ...],
+                    note: str | None) -> None:
+    """Give a token's subject a readable name."""
+    store = _load_store()
+    with _cli_errors():
+        agent = agents_mod.register(
+            store, subject=subject, name=name, actor=_whoami(),
+            scopes=tuple(scopes), note=note,
+        )
+    click.echo(f"registered {agent.name} ({agent.subject}) as {agent.status.value}")
+
+
+@agents_group.command("subject")
+@click.argument("token")
+def agents_subject(token: str) -> None:
+    """Print a token's auth subject without storing the token."""
+    click.echo(trust_mod.auth_subject_for_token(token))
+
+
+@agents_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Emit agents as JSON.")
+def agents_list(as_json: bool) -> None:
+    """Name, status, scopes, claimed and last-used for every agent."""
+    store = _load_store()
+    with _cli_errors():
+        agents = agents_mod.load_registry(store)
+    if as_json:
+        _emit_json({"agents": [
+            a.to_dict() | {
+                "last_seen": (
+                    ls.isoformat(timespec="seconds")
+                    if (ls := agents_mod.last_seen(store, a)) else None
+                )
+            }
+            for a in agents
+        ]})
+        return
+    if not agents:
+        click.echo(
+            "no registered agents. an unregistered token still authenticates "
+            "as an unnamed active agent."
+        )
+        return
+    for a in agents:
+        claimed = f"{a.claimed_at:%Y-%m-%d}" if a.claimed_at else "-"
+        seen = agents_mod.last_seen(store, a)
+        last = f"{seen:%Y-%m-%d}" if seen else "never"
+        scopes = ",".join(a.scopes) if a.scopes else "-"
+        click.echo(
+            f"{a.status.value:<8} {a.name:<24} {a.subject:<18} "
+            f"claimed={claimed}  last-used={last}  scopes={scopes}"
+        )
+
+
+@agents_group.command("show")
+@click.argument("name")
+@click.option("--limit", default=50, show_default=True, type=int,
+              help="Newest N events.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the replay as JSON.")
+def agents_show(name: str, limit: int, as_json: bool) -> None:
+    """Replay every audit event this agent produced."""
+    store = _load_store()
+    with _cli_errors():
+        agent = agents_mod.find(store, name)
+        if agent is None:
+            raise agents_mod.AgentError(f"unknown agent {name!r}")
+        events = agents_mod.replay(store, name, limit=limit)
+    if as_json:
+        _emit_json({"agent": agent.to_dict(), "events": events})
+        return
+    click.echo(f"{agent.name} ({agent.subject}) — {agent.status.value}")
+    if not events:
+        click.echo("no audit events attributed to this agent yet.")
+        return
+    for ev in events:
+        ids = ",".join(ev["object_ids"]) or "-"
+        # "<-" is something done to the agent; "  " is something it did.
+        marker = "  " if ev["by_agent"] else "<-"
+        click.echo(f"  {marker} {ev['created_at']}  {ev['event']:<26} {ids}")
+
+
+def _transition(name: str, status: agents_mod.AgentStatus, verb: str) -> None:
+    store = _load_store()
+    with _cli_errors():
+        agent = agents_mod.set_status(store, name, status, actor=_whoami())
+    click.echo(f"{verb} {agent.name} ({agent.subject})")
+
+
+@agents_group.command("pause")
+@click.argument("name")
+def agents_pause(name: str) -> None:
+    """Stop this agent's credential authenticating, reversibly."""
+    _transition(name, agents_mod.AgentStatus.PAUSED, "paused")
+
+
+@agents_group.command("resume")
+@click.argument("name")
+def agents_resume(name: str) -> None:
+    """Let a paused agent authenticate again."""
+    _transition(name, agents_mod.AgentStatus.ACTIVE, "resumed")
+
+
+@agents_group.command("revoke")
+@click.argument("name")
+@click.confirmation_option(
+    prompt="revocation is terminal — the agent cannot be resumed. continue?"
+)
+def agents_revoke(name: str) -> None:
+    """Permanently stop this credential. Terminal — issue a new token instead."""
+    _transition(name, agents_mod.AgentStatus.REVOKED, "revoked")
 
 
 @cli.command("pin")

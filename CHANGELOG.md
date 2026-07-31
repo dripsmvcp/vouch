@@ -27,6 +27,19 @@ All notable changes to vouch are documented here. Format follows
   `workflow` and `warning` claims count as lessons too, so existing KBs don't
   have to re-type their rules. `vouch lessons`, `vouch mark-lesson-followed`,
   `vouch lesson-follow-through`, plus MCP and JSONL.
+- **agent registry — who can write, and what each agent did** (#607):
+  `vouch agents list / show / pause / resume / revoke`, keyed on the
+  `auth_subject` hash `trust.py` already derives, so the committed
+  `.vouch/agents.yaml` holds names, status, scopes and claim dates while the
+  credential itself stays in local config. Pause and revoke are enforced at one
+  chokepoint (`trust.authorized_bearer_token`), so MCP-over-HTTP and
+  JSONL-over-HTTP inherit revocation without two implementations, and a denied
+  token is indistinguishable from a wrong one. Revocation is terminal by
+  design. `vouch agents show` replays every audit event an agent produced
+  alongside the control-plane transitions applied to it — the per-action
+  attribution ditto's own docs stop short of. Existing deployments are
+  unaffected: an unregistered token still authenticates as an unnamed active
+  agent, and a corrupted status fails closed rather than reading as active.
 - **first-class goals — review-gated in-flight objectives** (#427): vouch could
   record everything a project *knows* and nothing about what it is *doing*, so
   an agent re-orienting after a compaction recovered facts and decisions but

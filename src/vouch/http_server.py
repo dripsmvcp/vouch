@@ -63,6 +63,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Send
 
+from . import agents as agents_mod
 from . import jsonl_server
 from . import trust as trust_mod
 from .capabilities import capabilities as build_caps
@@ -202,9 +203,12 @@ async def _rpc(request: Request) -> JSONResponse:
         ))
 
     agent = request.headers.get("X-Vouch-Agent")
-    bearer = trust_mod.matched_bearer_token(
+    # authorized_ rather than matched_: the registry's paused/revoked gate
+    # rides the same chokepoint, so both HTTP transports inherit revocation.
+    bearer = trust_mod.authorized_bearer_token(
         request.headers.get("authorization"),
         tuple(getattr(request.app.state, "vouch_bearer_tokens", ()) or ()),
+        gate=agents_mod.subject_is_active,
     )
     trust = trust_mod.with_auth_subject(trust_mod.JSONL_HTTP, bearer)
 
@@ -284,9 +288,10 @@ class _McpTrustASGI:
             k.decode("latin-1").lower(): v.decode("latin-1")
             for k, v in scope.get("headers", [])
         }
-        bearer = trust_mod.matched_bearer_token(
+        bearer = trust_mod.authorized_bearer_token(
             headers.get("authorization"),
             self._accepted,
+            gate=agents_mod.subject_is_active,
         )
         trust = trust_mod.with_auth_subject(trust_mod.MCP_HTTP, bearer)
         token = trust_mod.set_trust_context(trust)

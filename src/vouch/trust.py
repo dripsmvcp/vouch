@@ -147,6 +147,29 @@ def matched_bearer_token(
     return None
 
 
+def authorized_bearer_token(
+    authorization: str | None,
+    accepted: tuple[str, ...],
+    *,
+    gate: Callable[[str], bool] | None = None,
+) -> str | None:
+    """``matched_bearer_token``, then the agent registry's paused/revoked gate.
+
+    One chokepoint so every token transport inherits revocation rather than
+    implementing it twice. ``gate`` is injected rather than imported so this
+    module keeps no storage dependency; ``agents.subject_is_active`` is what
+    the HTTP transports pass. With no gate this is exactly the old behaviour.
+
+    A denied token returns ``None`` — indistinguishable from a wrong token to
+    the caller, which is the right shape: a paused agent learns it is not
+    authenticated, not that its credential is otherwise valid.
+    """
+    token = matched_bearer_token(authorization, accepted)
+    if token is None or gate is None:
+        return token
+    return token if gate(auth_subject_for_token(token)) else None
+
+
 def with_auth_subject(trust: VouchTrust, token: str | None) -> VouchTrust:
     if token is None:
         return trust

@@ -143,6 +143,58 @@ def test_claim_referenced_by_relation_and_supersede(store: KBStore) -> None:
     assert any("relation" in r for r in refs)
 
 
+def test_page_not_blocked_by_same_slug_claim_relation(store: KBStore) -> None:
+    """A claim↔claim edge must not block deleting a page that shares the
+    slug — relation endpoints are bare ids, but the gate is kind-aware
+    (#663)."""
+    _claim(store, "auth")
+    _claim(store, "peer")
+    store.put_relation(Relation(
+        id="auth--supports--peer", source="auth",
+        relation=RelationType.SUPPORTS, target="peer",
+    ))
+    store.put_page(Page(id="auth", title="Auth notes", body="page body"))
+    assert referenced_by(store, "page", "auth") == []
+    # the claim the relation actually names is still blocked
+    assert any("relation" in r for r in referenced_by(store, "claim", "auth"))
+    pr = propose_delete(
+        store, target_kind="page", target_id="auth", proposed_by="agent",
+    )
+    assert pr.status is ProposalStatus.PENDING
+
+
+def test_relation_endpoint_kind_follows_node_exists_priority(
+    store: KBStore,
+) -> None:
+    from vouch.proposals import _relation_endpoint_kind
+
+    assert _relation_endpoint_kind(store, "") is None
+    assert _relation_endpoint_kind(store, "missing") is None
+    _claim(store, "c1")
+    assert _relation_endpoint_kind(store, "c1") == "claim"
+    store.put_page(Page(id="p-only", title="P", body=""))
+    assert _relation_endpoint_kind(store, "p-only") == "page"
+    store.put_entity(Entity(id="e-only", name="E", type=EntityType.CONCEPT))
+    assert _relation_endpoint_kind(store, "e-only") == "entity"
+    src = store.put_source(b"source-bytes")
+    assert _relation_endpoint_kind(store, src.id) == "source"
+
+
+def test_entity_still_blocked_by_entity_relation(store: KBStore) -> None:
+    store.put_entity(Entity(id="svc", name="Svc", type=EntityType.SYSTEM))
+    store.put_entity(Entity(id="db", name="Db", type=EntityType.SYSTEM))
+    store.put_relation(Relation(
+        id="svc--related_to--db", source="svc",
+        relation=RelationType.RELATES_TO, target="db",
+    ))
+    refs = referenced_by(store, "entity", "svc")
+    assert any("relation" in r for r in refs)
+    with pytest.raises(ProposalError, match="referenced"):
+        propose_delete(
+            store, target_kind="entity", target_id="svc", proposed_by="a",
+        )
+
+
 def test_unreferenced_claim_is_deletable(store: KBStore) -> None:
     _claim(store, "lonely")
     assert referenced_by(store, "claim", "lonely") == []

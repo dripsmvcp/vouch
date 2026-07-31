@@ -19,6 +19,8 @@ from .models import (
     Claim,
     ClaimStatus,
     Evidence,
+    Goal,
+    GoalStatus,
     ProposalKind,
     ProposalStatus,
     Relation,
@@ -166,6 +168,67 @@ def confirm(store: KBStore, *, claim_id: str, actor: str) -> Claim:
         store.kb_dir, event="claim.confirm", actor=actor, object_ids=[claim.id],
     )
     return claim
+
+
+# Terminal statuses stamp `closed_at`; a goal can still be reopened out of
+# them (a "done" migration that turned out not to be done is a real event),
+# in which case the stamp is cleared again.
+_CLOSED_GOAL_STATUSES = frozenset({GoalStatus.DONE, GoalStatus.ABANDONED})
+
+
+def set_goal_status(
+    store: KBStore,
+    *,
+    goal_id: str,
+    status: str | GoalStatus,
+    actor: str,
+    reason: str | None = None,
+) -> Goal:
+    """Move an approved goal to a new status. The only goal write path.
+
+    Same posture as `archive` / `confirm` above: a status move is metadata
+    about already-reviewed knowledge, not a new assertion, so it lands
+    directly — but it lands *here*, in one place, so every transition appends
+    a `goal.status` event to the audit log and a row to the goal's own
+    `history`. Nothing else in the codebase may set `Goal.status`; if a future
+    change needs to, it belongs in this function.
+    """
+    try:
+        new_status = GoalStatus(status)
+    except ValueError as e:
+        raise LifecycleError(
+            f"unknown goal status {status!r}; expected one of "
+            f"{[s.value for s in GoalStatus]}"
+        ) from e
+    goal = store.get_goal(goal_id)
+    if goal.status is new_status:
+        raise LifecycleError(
+            f"goal {goal_id} is already {new_status.value}"
+        )
+    previous = goal.status
+    now = datetime.now(UTC)
+    goal.status = new_status
+    goal.updated_at = now
+    goal.closed_at = now if new_status in _CLOSED_GOAL_STATUSES else None
+    goal.history = [
+        *goal.history,
+        {
+            "from": previous.value,
+            "to": new_status.value,
+            "at": now.isoformat(),
+            "actor": actor,
+            "reason": reason,
+        },
+    ]
+    store.update_goal(goal)
+    audit.log_event(
+        store.kb_dir,
+        event="goal.status",
+        actor=actor,
+        object_ids=[goal.id],
+        data={"from": previous.value, "to": new_status.value, "reason": reason},
+    )
+    return goal
 
 
 def clear_claims(

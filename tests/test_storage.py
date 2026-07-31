@@ -640,7 +640,7 @@ def test_approve_page_update_rejects_stale_claim_ref(store: KBStore) -> None:
     )
     pr = propose_page(
         store, title="T", body="updated", claim_ids=["c1"],
-        proposed_by="vault-sync", slug_hint="p1",
+        proposed_by="vault-sync", slug_hint="p1", update_existing=True,
     )
     (store.kb_dir / "claims" / "c1.yaml").unlink()
     # DeadClaimRefsError (a ProposalError) is the specific refusal: the
@@ -844,6 +844,54 @@ def test_propose_page_round_trip_through_approval(store: KBStore) -> None:
     assert store.get_page(artifact.id).body == "body"
 
 
+def test_approve_page_collision_does_not_overwrite(store: KBStore) -> None:
+    # Colliding title/slug must refuse, not silently update_page the durable
+    # artifact. Before the fix, PAGE was exempt from the collision guard and
+    # any matching id took the vault-edit update path.
+    store.put_page(Page(id="deploy-workflow", title="Deploy Workflow",
+                        body="ORIGINAL"))
+    pr = propose_page(
+        store, title="Deploy Workflow", body="WIPED", proposed_by="agent",
+    )
+    with pytest.raises(ProposalError, match="already exists"):
+        approve(store, pr.id, approved_by="reviewer")
+    assert store.get_page("deploy-workflow").body == "ORIGINAL"
+
+
+def test_approve_page_update_existing_opt_in(store: KBStore) -> None:
+    # Explicit update_existing=True (vault_to_kb path) still updates in place.
+    store.put_page(Page(id="alpha-page", title="Alpha", body="old"))
+    pr = propose_page(
+        store, title="Alpha", body="new", proposed_by="vault-sync",
+        slug_hint="alpha-page", update_existing=True,
+    )
+    approve(store, pr.id, approved_by="reviewer")
+    assert store.get_page("alpha-page").body == "new"
+
+
+def test_approve_page_update_fails_if_target_deleted(store: KBStore) -> None:
+    # Page removed between propose and approve: update must refuse, not create.
+    store.put_page(Page(id="alpha-page", title="Alpha", body="old"))
+    pr = propose_page(
+        store, title="Alpha", body="new", proposed_by="vault-sync",
+        slug_hint="alpha-page", update_existing=True,
+    )
+    (store.kb_dir / "pages" / "alpha-page.md").unlink()
+    reason = check_approvable(store, pr.id, approved_by="reviewer")
+    assert reason is not None and "does not exist" in reason
+    with pytest.raises(ProposalError, match="does not exist"):
+        approve(store, pr.id, approved_by="reviewer")
+    assert not (store.kb_dir / "pages" / "alpha-page.md").exists()
+
+
+def test_propose_page_update_existing_requires_target(store: KBStore) -> None:
+    with pytest.raises(ProposalError, match="does not exist"):
+        propose_page(
+            store, title="Ghost", body="b", proposed_by="vault-sync",
+            slug_hint="no-such-page", update_existing=True,
+        )
+
+
 def test_propose_page_rejects_unknown_claim_ref(store: KBStore) -> None:
     with pytest.raises(ProposalError, match="unknown claim id"):
         propose_page(
@@ -981,3 +1029,54 @@ def test_list_pages_skips_unreadable_file(store: KBStore) -> None:
 
     pages = store.list_pages()
     assert [p.id for p in pages] == ["p-ok"]
+
+
+# --- path-traversal: untrusted slug_hint / artifact id must not escape KB --
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    ["../evil", "..", "sub/evil", "a\\b", "/abs", ".", "x\x00y", ""],
+)
+def test_put_rejects_path_traversal_ids(store: KBStore, bad_id: str) -> None:
+    # Write builders must refuse ids that escape their subdirectory; an
+    # unsanitized id is a path-traversal write primitive.
+    src = store.put_source(b"e")
+    with pytest.raises(ValueError, match="artifact id"):
+        store.put_claim(Claim(id=bad_id, text="t", evidence=[src.id]))
+    with pytest.raises(ValueError, match="artifact id"):
+        store.put_page(Page(id=bad_id, title="T", body="b"))
+    with pytest.raises(ValueError, match="artifact id"):
+        store.put_entity(Entity(id=bad_id, name="N", type=EntityType.CONCEPT))
+    with pytest.raises(ValueError, match="artifact id"):
+        store.get_source(bad_id)
+
+
+def test_validate_artifact_id_rejects_non_string() -> None:
+    from vouch.storage import _validate_artifact_id
+
+    with pytest.raises(ValueError, match="artifact id must be a non-empty string"):
+        _validate_artifact_id(None)  # type: ignore[arg-type]
+
+
+def test_approve_with_traversal_slug_hint_writes_nothing(
+    store: KBStore, tmp_path: Path
+) -> None:
+    # End-to-end: an untrusted proposer supplies a malicious slug_hint; the
+    # proposal may file, but approval must not write an artifact outside the KB.
+    src = store.put_source(b"e")
+    slug_hint = "../../../../evil"
+    pr = propose_claim(
+        store,
+        text="t",
+        evidence=[src.id],
+        proposed_by="agent",
+        slug_hint=slug_hint,
+    )
+    # Exact target the unguarded join would have written.
+    escaped = (store.kb_dir / "claims" / f"{slug_hint}.yaml").resolve()
+    with pytest.raises((ProposalError, ValueError)):
+        approve(store, pr.id, approved_by="reviewer")
+    assert not escaped.exists()
+    assert not escaped.with_suffix("").exists()
+    assert list((store.kb_dir / "claims").glob("*.yaml")) == []

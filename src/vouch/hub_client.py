@@ -135,12 +135,17 @@ def _request(
     req.add_header("User-Agent", "vouch-hub-client")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
+    # HTTP header names are case-insensitive (RFC 7230 §3.2); resp.headers'
+    # own .get() honours that, but flattening straight into a plain dict
+    # would throw it away and leave callers vulnerable to a hub or proxy
+    # that sends e.g. "etag" instead of "ETag". Lower-case every key here
+    # so callers always look up by the lower-case name.
     try:
         # urlopen target is the user-configured hub url, not attacker-controlled
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            return resp.status, dict(resp.headers.items()), resp.read()
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers.items()), e.read()
+        return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
     except urllib.error.URLError as e:
         raise HubError(f"cannot reach hub at {url}: {e.reason}") from e
 
@@ -216,7 +221,7 @@ def pull(
         return {"status": "up_to_date", "bundle_id": link.last_bundle_id}
     if status != 200:
         raise HubError(_error_message(status, payload))
-    remote_id = (resp_headers.get("ETag") or "").strip('"') or None
+    remote_id = (resp_headers.get("etag") or "").strip('"') or None
 
     with tempfile.TemporaryDirectory(prefix="vouch-hub-") as tmp:
         bundle_path = Path(tmp) / "pulled.tar.gz"

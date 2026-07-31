@@ -441,6 +441,9 @@ def vault_to_kb(
             proposed_by=actor,
             tags=list(edited.tags),
             slug_hint=page_id,
+            # Opt-in update: without this, approve() refuses the existing id
+            # (same collision guard as claims) and a vault edit would fail.
+            update_existing=True,
             # A vault edit is a body edit, never a scope change: carry the
             # durable page's own scope through, or the propose gate would
             # restamp it with the KB default (silently widening/narrowing

@@ -151,6 +151,8 @@ _CLI_MIRRORS = {
     "kb.effectiveness": "eval effectiveness",
     "kb.graph_export": "graph",
     "kb.propose_theme": "detect-themes --propose",
+    "kb.list_goals": "goals",
+    "kb.set_goal_status": "goal-status",
     "kb.list_lessons": "lessons",
 }
 

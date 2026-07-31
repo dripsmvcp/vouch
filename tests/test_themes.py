@@ -8,7 +8,9 @@ import pytest
 
 from vouch import sessions as sess_mod
 from vouch import themes
+from vouch.models import ArtifactScope, Visibility
 from vouch.proposals import ProposalError, approve, propose_claim, propose_entity
+from vouch.scoping import ViewerContext, is_visible, viewer_from
 from vouch.storage import KBStore
 
 
@@ -121,6 +123,66 @@ def test_detect_themes_excludes_archived(store: KBStore) -> None:
         life.archive(store, claim_id=claim.id, actor="human")
     result = themes.detect_themes(store, min_sessions=1, min_claims=1)
     assert len(result.clusters) == 0
+
+
+def test_detect_themes_excludes_claims_the_viewer_cannot_see(
+    store: KBStore,
+) -> None:
+    """A claim outside the viewer's scope must not reach a cluster."""
+    _seed_multi_session_claims(store)
+    # Re-stamp every claim private to an agent nobody is reading as.
+    for claim in store.list_claims():
+        claim.scope = ArtifactScope(visibility=Visibility.PRIVATE, agent="alice")
+        store.update_claim(claim)
+
+    viewer = viewer_from(config_path=store.config_path)
+    assert not [c for c in store.list_claims() if is_visible(c.scope, viewer)]
+
+    result = themes.detect_themes(store, min_sessions=1, min_claims=1)
+    assert result.clusters == []
+
+
+def test_detect_themes_honors_explicit_viewer(store: KBStore) -> None:
+    """The claim's own agent still sees it; a different agent does not."""
+    _seed_multi_session_claims(store)
+    for claim in store.list_claims():
+        claim.scope = ArtifactScope(visibility=Visibility.PRIVATE, agent="alice")
+        store.update_claim(claim)
+
+    alice = themes.detect_themes(
+        store, min_sessions=2, min_claims=2,
+        viewer=ViewerContext(agent="alice"),
+    )
+    assert [c.entities for c in alice.clusters], "alice owns these claims"
+
+    bob = themes.detect_themes(
+        store, min_sessions=1, min_claims=1, viewer=ViewerContext(agent="bob"),
+    )
+    assert bob.clusters == []
+
+
+def test_detect_themes_scope_leak_does_not_reach_a_theme_page(
+    store: KBStore,
+) -> None:
+    """Regression: the detector fed private claim ids into a durable page.
+
+    `propose_theme` writes `cluster.claim_ids` and `cluster.session_ids` into
+    the page body, so an unfiltered scan leaked them past the review gate as
+    committed yaml rather than as an advisory read.
+    """
+    _seed_multi_session_claims(store)
+    private_ids = set()
+    for claim in store.list_claims():
+        if "session-mgmt" in claim.entities:
+            continue
+        claim.scope = ArtifactScope(visibility=Visibility.PRIVATE, agent="alice")
+        store.update_claim(claim)
+        private_ids.add(claim.id)
+    assert private_ids
+
+    result = themes.detect_themes(store, min_sessions=1, min_claims=1)
+    for cluster in result.clusters:
+        assert not private_ids & set(cluster.claim_ids)
 
 
 def test_detect_themes_disabled_config(store: KBStore) -> None:

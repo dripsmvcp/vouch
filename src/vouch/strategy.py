@@ -55,8 +55,10 @@ DEFAULT_MEM_MB = 2048
 DEFAULT_CPU_S = 15
 
 # audit events refused inside the sandbox child. network, process spawning,
-# and native dlopen are blocked outright; filesystem writes are blocked by
-# inspecting the open mode (reads - needed to import numpy etc. - are allowed).
+# native dlopen, and filesystem-mutating calls outside of `open` (delete,
+# rename, mkdir, chmod, ...) are blocked outright; writing through `open`
+# itself is blocked by inspecting its mode (reads - needed to import numpy
+# etc. - are allowed).
 _BLOCKED_EXACT = frozenset({
     "os.system",
     "os.exec",
@@ -69,6 +71,16 @@ _BLOCKED_EXACT = frozenset({
     "ctypes.dlsym",
     "ctypes.call_function",
     "ctypes.cdata",
+    # filesystem mutation that doesn't go through `open` at all — the mode/
+    # flags check below only catches a write-mode open call.
+    "os.remove",
+    "os.rmdir",
+    "os.rename",  # also fires for os.replace
+    "os.mkdir",
+    "os.link",
+    "os.symlink",
+    "os.chmod",
+    "os.truncate",
 })
 _BLOCKED_PREFIXES = ("socket.", "urllib.", "ftplib.", "http.")
 

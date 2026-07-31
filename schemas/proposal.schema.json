@@ -6,7 +6,8 @@
         "page",
         "entity",
         "relation",
-        "delete"
+        "delete",
+        "goal"
       ],
       "title": "ProposalKind",
       "type": "string"

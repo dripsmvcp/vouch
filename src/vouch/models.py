@@ -163,6 +163,21 @@ class PageStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class GoalStatus(StrEnum):
+    """Where an approved objective stands.
+
+    ``open`` is the only status a goal can be approved into — every other
+    value is reached through ``lifecycle.set_goal_status``, which is the
+    single write path and the only thing that appends the transition to the
+    audit log.
+    """
+
+    OPEN = "open"
+    DONE = "done"
+    ABANDONED = "abandoned"
+    BLOCKED = "blocked"
+
+
 # --- core artifacts -------------------------------------------------------
 
 
@@ -388,6 +403,50 @@ class Page(BaseModel):
             return ArtifactScope()
 
 
+class Goal(BaseModel):
+    """A review-gated in-flight objective — what the project is *doing*.
+
+    Claims/pages/entities record what a project knows; a goal records what it
+    is currently trying to achieve ("mid-migration to typed config", "release
+    blocked on the audit-race fix"). Reviewed knowledge, not a scratchpad: a
+    goal is proposed and approved through the same gate as every other
+    artifact, and every status move goes through ``lifecycle.set_goal_status``
+    so the audit log carries the whole trajectory.
+    """
+
+    id: str
+    title: str
+    detail: str | None = None
+    status: GoalStatus = GoalStatus.OPEN
+    # Optional links to the knowledge the objective concerns. Existence is
+    # checked at the gate (propose + approve), like a page's claim refs.
+    claims: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    # Append-only trajectory: one row per accepted transition, oldest first.
+    # The audit log stays authoritative; this is the diffable-in-PR summary,
+    # the same relationship `decided/` has to the log for proposals.
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    scope: ArtifactScope = Field(default_factory=ArtifactScope)
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    closed_at: datetime | None = None
+    approved_by: str | None = None  # vouch: review-gate audit
+
+    @field_validator("title")
+    @classmethod
+    def _title_non_empty(cls, v: str) -> str:
+        # Same posture as Claim.text / Page.title (#155): enforce on the model
+        # so propose, approve, and any future direct-write path are all closed
+        # at once rather than each re-implementing the check.
+        return _require_non_empty(v, "goal title")
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _coerce_scope(cls, v: object) -> object:
+        return _coerce_artifact_scope(v)
+
+
 # --- audit + sessions -----------------------------------------------------
 
 
@@ -435,6 +494,7 @@ class ProposalKind(StrEnum):
     ENTITY = "entity"
     RELATION = "relation"
     DELETE = "delete"
+    GOAL = "goal"
 
 
 class ProposalStatus(StrEnum):

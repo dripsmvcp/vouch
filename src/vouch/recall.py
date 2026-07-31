@@ -18,6 +18,7 @@ import yaml
 
 from .config_coerce import coerce_bool
 from .context import _RETRACTED_CLAIM_STATUSES
+from .goals import list_goals as list_open_goals
 from .models import PageStatus
 from .scoping import ViewerContext, is_visible, viewer_from
 from .storage import KBStore
@@ -87,9 +88,13 @@ def build_digest(
         p for p in active_pages
         if is_visible(p.scope, viewer)
     ]
+    # Open objectives ride along with the approved facts: a fresh session that
+    # knows what the project *knows* but not what it is mid-way through will
+    # confidently resume the wrong thing. Viewer-scoped like everything else.
+    open_goals = list_open_goals(store, viewer=viewer)
     if stats is not None:
         stats["hidden"] = (len(live) - len(claims)) + (len(active_pages) - len(pages))
-    if not claims and not pages:
+    if not claims and not pages and not open_goals:
         return ""
 
     whose = (
@@ -101,8 +106,9 @@ def build_digest(
     lines: list[str] = [
         _OPEN_TAG,
         f"# approved KB knowledge {whose} — {len(claims)} claim(s), "
-        f"{len(pages)} page(s). reviewed, cited, durable. use kb_read_page / "
-        "kb_search for detail; kb_propose_* (human-approved) to add more.",
+        f"{len(pages)} page(s), {len(open_goals)} open goal(s). reviewed, "
+        "cited, durable. use kb_read_page / kb_search for detail; "
+        "kb_propose_* (human-approved) to add more.",
     ]
     if claims:
         lines += ["", "## claims"]
@@ -110,6 +116,9 @@ def build_digest(
     if pages:
         lines += ["", "## pages"]
         lines += [f"- [{p.id}] {p.title}" for p in pages]
+    if open_goals:
+        lines += ["", "## open goals — what this project is mid-way through"]
+        lines += [f"- [{g.id}] {g.title}" for g in open_goals]
     lines.append(_CLOSE_TAG)
     body = "\n".join(lines)
 

@@ -134,6 +134,7 @@ HOT_MEMORY_COVERED: frozenset[str] = frozenset({
     "kb.list_relations",
     "kb.list_sources",
     "kb.list_pending",
+    "kb.list_goals",
     "kb.list_lessons",
 })
 
@@ -171,6 +172,8 @@ HOT_MEMORY_EXCLUDED: dict[str, str] = {
     "kb.propose_relation": "write path — review gate",
     "kb.propose_theme": "write path — review gate",
     "kb.propose_delete": "write path — review gate",
+    "kb.propose_goal": "write path — review gate",
+    "kb.set_goal_status": "lifecycle — mutates durable state",
     "kb.compile": "write path — review gate (files page proposals via wiki-compiler)",
     "kb.summarize_session": "write path — review gate (files session-summary page proposals)",
     "kb.clear_claims": "lifecycle — mutates durable state",

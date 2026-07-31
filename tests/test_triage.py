@@ -479,6 +479,27 @@ def test_disabled_config_value_keeps_default_false(store: KBStore) -> None:
     assert cfg.enabled is False
 
 
+def test_quoted_enabled_is_parsed(store: KBStore) -> None:
+    """Regression (#658): `triage.enabled` accepted only a real YAML bool, so
+    a quoted `enabled: "true"` left kb.triage_pending answering "disabled" for
+    a config that plainly says otherwise."""
+    store.config_path.write_text(
+        'triage:\n  enabled: "true"\n', encoding="utf-8",
+    )
+    assert triage.triage_cfg(store).enabled is True
+
+    store.config_path.write_text(
+        'triage:\n  enabled: "false"\n', encoding="utf-8",
+    )
+    assert triage.triage_cfg(store).enabled is False
+
+    # unrecognized spelling degrades to the opt-in default (off)
+    store.config_path.write_text(
+        "triage:\n  enabled: perhaps\n", encoding="utf-8",
+    )
+    assert triage.triage_cfg(store).enabled is False
+
+
 # --- registration sites --------------------------------------------------------
 
 

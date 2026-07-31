@@ -117,8 +117,7 @@ def _configured_rerank(store: KBStore, *, limit: int) -> tuple[bool, int]:
     if not isinstance(rerank, dict):
         return False, limit
 
-    enabled = rerank.get("enabled", False)
-    enabled = enabled if isinstance(enabled, bool) else False
+    enabled = coerce_bool(rerank.get("enabled", False), False)
 
     top_k = rerank.get("top_k", limit)
     top_k = (
@@ -150,8 +149,7 @@ def _configured_recency(store: KBStore) -> tuple[bool, float]:
     if not isinstance(recency, dict):
         return False, 90.0
 
-    enabled = recency.get("enabled", False)
-    enabled = enabled if isinstance(enabled, bool) else False
+    enabled = coerce_bool(recency.get("enabled", False), False)
 
     half_life = recency.get("half_life_days", 90.0)
     half_life = (

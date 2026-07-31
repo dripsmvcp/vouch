@@ -35,6 +35,7 @@ from . import compile as compile_mod
 from . import contradictions as contradictions_mod
 from . import digest as digest_mod
 from . import fetch as fetch_mod
+from . import goals as goals_mod
 from . import hub as hub_mod
 from . import inbox as inbox_mod
 from . import install_adapter as install_mod
@@ -81,6 +82,7 @@ from .proposals import (
     propose_claim,
     propose_delete,
     propose_entity,
+    propose_goal,
     propose_page,
     propose_relation,
     reject_auto_extracted,
@@ -2623,6 +2625,75 @@ def lesson_follow_through_cmd(claim_id: str) -> None:
     with _cli_errors():
         stats = lessons_mod.follow_through(store, claim_id=claim_id)
     click.echo(json.dumps(stats, indent=2))
+
+
+# --- goals ----------------------------------------------------------------
+
+
+@cli.command(name="propose-goal")
+@click.option("--title", required=True)
+@click.option("--detail", default=None)
+@click.option("--claim", "claims", multiple=True, help="claim id this goal concerns")
+@click.option("--entity", "entities", multiple=True, help="entity id this goal concerns")
+@click.option("--tag", "tags", multiple=True)
+@click.option("--rationale", default=None)
+def propose_goal_cmd(
+    title: str,
+    detail: str | None,
+    claims: tuple[str, ...],
+    entities: tuple[str, ...],
+    tags: tuple[str, ...],
+    rationale: str | None,
+) -> None:
+    """Propose an in-flight objective for review."""
+    store = _load_store()
+    with _cli_errors():
+        pr = propose_goal(
+            store,
+            title=title,
+            detail=detail,
+            claims=list(claims),
+            entities=list(entities),
+            tags=list(tags),
+            rationale=rationale,
+            proposed_by=_whoami(),
+        )
+    click.echo(pr.id)
+
+
+@cli.command(name="goals")
+@click.option(
+    "--status",
+    default="open",
+    show_default=True,
+    help="goal status to list, or 'all' for every goal",
+)
+def list_goals_cmd(status: str) -> None:
+    """List approved goals, oldest first."""
+    store = _load_store()
+    with _cli_errors():
+        found = goals_mod.list_goals(
+            store, status=None if status == "all" else status
+        )
+    if not found:
+        click.echo(f"no {status} goals" if status != "all" else "no goals")
+        return
+    for goal in found:
+        click.echo(f"{goal.id:50} [{goal.status.value}] {goal.title}")
+
+
+@cli.command(name="goal-status")
+@click.argument("goal_id")
+@click.argument("status")
+@click.option("--reason", default=None)
+def set_goal_status_cmd(goal_id: str, status: str, reason: str | None) -> None:
+    """Move a goal to open / done / abandoned / blocked."""
+    store = _load_store()
+    with _cli_errors():
+        goal = life.set_goal_status(
+            store, goal_id=goal_id, status=status, actor=_whoami(), reason=reason
+        )
+    click.echo(f"{goal.id} -> {goal.status.value}")
 
 
 # --- lifecycle ------------------------------------------------------------

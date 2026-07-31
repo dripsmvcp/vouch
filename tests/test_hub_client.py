@@ -80,6 +80,9 @@ class FakeHub(BaseHTTPRequestHandler):
     files: ClassVar[dict[str, bytes]] = {}
     token = "vhp_test"
     conflicts_on_push: ClassVar[list[str]] = []
+    # overridable so tests can prove the client survives a hub that echoes
+    # the header in a different case than the literal string "ETag".
+    etag_header_name: ClassVar[str] = "ETag"
 
     def _authed(self) -> bool:
         return self.headers.get("Authorization") == f"Bearer {self.token}"
@@ -93,11 +96,11 @@ class FakeHub(BaseHTTPRequestHandler):
         etag = f'"{bundle_id}"'
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
-            self.send_header("ETag", etag)
+            self.send_header(self.etag_header_name, etag)
             self.end_headers()
             return
         self.send_response(200)
-        self.send_header("ETag", etag)
+        self.send_header(self.etag_header_name, etag)
         self.send_header("Content-Type", "application/gzip")
         self.end_headers()
         self.wfile.write(gz)
@@ -135,6 +138,7 @@ class FakeHub(BaseHTTPRequestHandler):
 def fake_hub():
     FakeHub.files = {}
     FakeHub.conflicts_on_push = []
+    FakeHub.etag_header_name = "ETag"
     srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeHub)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
@@ -262,6 +266,27 @@ def test_pull_files_a_proposal_even_when_a_local_claim_exists(
     assert r["status"] == "proposed"
     assert store.get_claim("r1").text == "local version"
     assert store.list_proposals(ProposalStatus.PENDING)
+
+
+def test_pull_dedup_survives_a_lower_case_etag_header(
+    store: KBStore, fake_hub: str, home: Path, tmp_path: Path
+) -> None:
+    """A hub (or an intermediary) that sends "etag" instead of "ETag" must
+    not defeat If-None-Match dedup on the next pull — HTTP header names are
+    case-insensitive."""
+    FakeHub.files = _remote_knowledge(tmp_path)
+    FakeHub.etag_header_name = "etag"
+    link = _link(store, fake_hub)
+
+    r1 = hub_client.pull(store, link, "vhp_test")
+    assert r1["status"] == "proposed"
+
+    reloaded = hub_client.load_link(store.kb_dir)
+    assert reloaded is not None
+    assert reloaded.last_bundle_id is not None
+
+    r2 = hub_client.pull(store, reloaded, "vhp_test")
+    assert r2["status"] == "up_to_date"
 
 
 # --- cli ------------------------------------------------------------------------

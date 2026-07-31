@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import audit, health
 from .models import Proposal, ProposalStatus
 from .proposals import EXPIRE_REASON
-from .storage import KBStore, _yaml_load
+from .storage import KBStore, _load_or_skip
 
 if TYPE_CHECKING:
     from .scoping import ViewerContext
@@ -50,12 +50,19 @@ def _decision_bucket(proposal: Proposal) -> str:
 
 
 def _list_decided(store: KBStore) -> list[Proposal]:
+    """Load decided proposals for review_summary.
+
+    Uses ``_load_or_skip`` so one corrupt ``decided/*.yaml`` cannot take down
+    ``vouch stats`` / ``kb.stats`` — same resilience as ``list_proposals``.
+    """
     ddir = store.kb_dir / "decided"
     if not ddir.is_dir():
         return []
     out: list[Proposal] = []
     for path in sorted(ddir.glob("*.yaml")):
-        out.append(Proposal.model_validate(_yaml_load(path.read_text(encoding="utf-8"))))
+        pr = _load_or_skip(path, Proposal, "proposal")
+        if pr is not None:
+            out.append(pr)
     return out
 
 

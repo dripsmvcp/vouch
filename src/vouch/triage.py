@@ -34,6 +34,7 @@ from typing import Any
 
 import yaml
 
+from .config_coerce import coerce_bool
 from .models import ClaimStatus, PageStatus, Proposal, ProposalKind, ProposalStatus
 from .proposals import _payload_block_reason
 from .storage import ArtifactNotFoundError, KBStore
@@ -88,8 +89,7 @@ def triage_cfg(store: KBStore) -> TriageConfig:
     triage = cfg.get("triage")
     triage = triage if isinstance(triage, dict) else {}
 
-    enabled = triage.get("enabled", False)
-    enabled = bool(enabled) if isinstance(enabled, bool) else False
+    enabled = coerce_bool(triage.get("enabled", False), False)
 
     backend = triage.get("backend", "embeddings")
     backend = backend if isinstance(backend, str) else "embeddings"

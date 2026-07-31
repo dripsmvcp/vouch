@@ -97,6 +97,20 @@ def test_review_summary_counts_decisions(store: KBStore) -> None:
     assert review["by_agent"]["a2"]["rejected"] == 1
 
 
+def test_review_summary_skips_corrupt_decided_file(store: KBStore) -> None:
+    """One bad decided/*.yaml must not crash vouch stats / kb.stats."""
+    src = store.put_source(b"x")
+    pr = propose_claim(store, text="ok", evidence=[src.id], proposed_by="a")
+    approve(store, pr.id, approved_by="human")
+    (store.kb_dir / "decided" / "corrupt.yaml").write_text(
+        "not: [valid\n", encoding="utf-8",
+    )
+    review = stats.review_summary(store, since_days=None)
+    assert review["approved"] == 1
+    body = stats.collect_stats(store, since_days=None)
+    assert body["review"]["approved"] == 1
+
+
 def test_review_summary_respects_window(store: KBStore) -> None:
     src = store.put_source(b"x")
     pr = propose_claim(store, text="old", evidence=[src.id], proposed_by="a")

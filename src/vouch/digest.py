@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .goals import list_goals as list_open_goals
 from .metrics import DEFAULT_STALE_DAYS, compute
 from .models import ClaimStatus, PageStatus, ProposalStatus
 from .page_filters import filter_pages
@@ -75,6 +76,14 @@ class FollowupRow:
 
 
 @dataclass(frozen=True)
+class GoalRow:
+    id: str
+    title: str
+    status: str
+    age_days: int
+
+
+@dataclass(frozen=True)
 class Digest:
     """Stable `to_dict()` schema — the `--format json` contract."""
 
@@ -88,6 +97,8 @@ class Digest:
     stale_claims: list[StaleRow] = field(default_factory=list)
     stale_total: int = 0
     followups_due: list[FollowupRow] = field(default_factory=list)
+    open_goals: list[GoalRow] = field(default_factory=list)
+    open_goals_total: int = 0
     citation_coverage: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -207,6 +218,19 @@ def build(
         key=lambda r: r.due_at,
     )[:limit]
 
+    # Open objectives, oldest first — what the project is mid-way through,
+    # which is the context a returning operator loses first.
+    open_goals = list_open_goals(store)
+    goal_rows = [
+        GoalRow(
+            id=g.id,
+            title=g.title if len(g.title) <= 72 else g.title[:69] + "...",
+            status=g.status.value,
+            age_days=max(0, (now - (_as_utc(g.created_at) or now)).days),
+        )
+        for g in open_goals[:limit]
+    ]
+
     m = compute(store, since=since, stale_after_days=stale_after_days, now=now)
 
     return Digest(
@@ -220,6 +244,8 @@ def build(
         stale_claims=stale_rows,
         stale_total=m.stale_claims,
         followups_due=followup_rows,
+        open_goals=goal_rows,
+        open_goals_total=len(open_goals),
         citation_coverage=m.citation_coverage,
     )
 
@@ -244,6 +270,14 @@ def render_text(d: Digest) -> str:
     for fr in d.followups_due:
         owner = f"  owner: {fr.owner}" if fr.owner else ""
         lines.append(f"  {fr.due_at}  {fr.id}  {fr.title}{owner}")
+    lines.append("")
+    lines.append(f"open goals: {d.open_goals_total}")
+    for gr in d.open_goals:
+        lines.append(f"  {gr.id}  {gr.age_days}d  {gr.title}")
+    if d.open_goals_total > len(d.open_goals):
+        lines.append(
+            f"  ... and {d.open_goals_total - len(d.open_goals)} more (vouch goals)"
+        )
     if d.citation_coverage is not None:
         lines.append("")
         lines.append(f"citation coverage: {d.citation_coverage:.0%}")
@@ -270,6 +304,11 @@ def render_markdown(d: Digest) -> str:
     lines += [
         f"- {r.due_at} `{r.id}` {r.title}" + (f" (owner: {r.owner})" if r.owner else "")
         for r in d.followups_due
+    ] or ["- none"]
+    lines.append("")
+    lines.append(f"## open goals ({d.open_goals_total})")
+    lines += [
+        f"- `{r.id}` {r.title} — open {r.age_days}d" for r in d.open_goals
     ] or ["- none"]
     if d.citation_coverage is not None:
         lines.append("")

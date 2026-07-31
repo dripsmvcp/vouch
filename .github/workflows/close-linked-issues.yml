@@ -23,8 +23,28 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          # same keyword set github itself honours, same-repo `#n` refs only.
+          # github's own parser ignores closing keywords inside code, so a pr
+          # that merely *discusses* "fixes #n" does not close #n. strip fenced
+          # blocks and inline code spans first to match that behaviour — pr
+          # #670 closed #652 off a quoted keyword in its own prose.
+          #
+          # the backtick arrives via printf rather than a literal: shellcheck
+          # reads one inside any quoting as an expansion and fails the
+          # actionlint gate with SC2016.
+          bt=$(printf '\140')
+          strip_code() {
+            awk -v bt="$bt" '
+              BEGIN {
+                fence = "^[[:space:]]*(" bt bt bt "|~~~)"
+                span = bt "[^" bt "]*" bt
+              }
+              $0 ~ fence { fenced = !fenced; next }
+              !fenced { gsub(span, ""); print }
+            '
+          }
+          # same keyword set github itself honours, same-repo #n refs only.
           nums=$(printf '%s\n%s\n' "$TITLE" "$BODY" \
+            | strip_code \
             | grep -oiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' \
             | grep -oE '[0-9]+' \
             | sort -un || true)

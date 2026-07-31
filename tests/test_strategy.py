@@ -129,6 +129,53 @@ def rank(query, candidates, *, limit):
     assert not target.exists()
 
 
+def test_sandbox_blocks_file_delete(tmp_path: Path) -> None:
+    victim = tmp_path / "victim"
+    victim.write_text("important data")
+    body = f"""
+from vouch.strategy import Candidate
+import os
+def rank(query, candidates, *, limit):
+    os.remove({str(victim)!r})
+    return [c.id for c in candidates]
+"""
+    assert run_sandboxed(_write(tmp_path, body), "q", CANDS, limit=10) is None
+    assert victim.exists()
+
+
+def test_sandbox_blocks_file_rename(tmp_path: Path) -> None:
+    victim = tmp_path / "victim"
+    victim.write_text("important data")
+    moved = tmp_path / "moved"
+    body = f"""
+from vouch.strategy import Candidate
+import os
+def rank(query, candidates, *, limit):
+    os.rename({str(victim)!r}, {str(moved)!r})
+    return [c.id for c in candidates]
+"""
+    assert run_sandboxed(_write(tmp_path, body), "q", CANDS, limit=10) is None
+    assert victim.exists()
+    assert not moved.exists()
+
+
+def test_sandbox_blocks_mkdir_and_rmdir(tmp_path: Path) -> None:
+    victim_dir = tmp_path / "victim_dir"
+    victim_dir.mkdir()
+    new_dir = tmp_path / "new_dir"
+    body = f"""
+from vouch.strategy import Candidate
+import os
+def rank(query, candidates, *, limit):
+    os.rmdir({str(victim_dir)!r})
+    os.mkdir({str(new_dir)!r})
+    return [c.id for c in candidates]
+"""
+    assert run_sandboxed(_write(tmp_path, body), "q", CANDS, limit=10) is None
+    assert victim_dir.exists()
+    assert not new_dir.exists()
+
+
 def test_sandbox_blocks_subprocess(tmp_path: Path) -> None:
     body = """
 from vouch.strategy import Candidate

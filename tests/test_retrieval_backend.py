@@ -585,6 +585,51 @@ def test_pages_first_quoted_false_does_not_enable(
     assert [item["id"] for item in pack["items"]] == ["c1", "p1"]
 
 
+def test_rerank_quoted_bool_is_parsed(store: KBStore) -> None:
+    """Regression (#658): `retrieval.rerank.enabled` fell through the
+    isinstance check, so a quoted `"true"` silently left rerank off while
+    the sibling `top_k` parsed fine and the block looked configured."""
+    store.config_path.write_text(
+        'retrieval:\n  rerank:\n    enabled: "true"\n    top_k: 5\n',
+        encoding="utf-8",
+    )
+    assert context._configured_rerank(store, limit=10) == (True, 5)
+
+    store.config_path.write_text(
+        'retrieval:\n  rerank:\n    enabled: "false"\n    top_k: 5\n',
+        encoding="utf-8",
+    )
+    assert context._configured_rerank(store, limit=10) == (False, 5)
+
+    # an unrecognized spelling still degrades to the default, not a crash
+    store.config_path.write_text(
+        "retrieval:\n  rerank:\n    enabled: perhaps\n    top_k: 5\n",
+        encoding="utf-8",
+    )
+    assert context._configured_rerank(store, limit=10) == (False, 5)
+
+
+def test_recency_quoted_bool_is_parsed(store: KBStore) -> None:
+    """Regression (#658): same fall-through on `retrieval.recency.enabled`."""
+    store.config_path.write_text(
+        'retrieval:\n  recency:\n    enabled: "true"\n    half_life_days: 30\n',
+        encoding="utf-8",
+    )
+    assert context._configured_recency(store) == (True, 30.0)
+
+    store.config_path.write_text(
+        'retrieval:\n  recency:\n    enabled: "false"\n    half_life_days: 30\n',
+        encoding="utf-8",
+    )
+    assert context._configured_recency(store) == (False, 30.0)
+
+    store.config_path.write_text(
+        "retrieval:\n  recency:\n    enabled: perhaps\n    half_life_days: 30\n",
+        encoding="utf-8",
+    )
+    assert context._configured_recency(store) == (False, 30.0)
+
+
 def test_pages_first_never_boosts_session_pages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

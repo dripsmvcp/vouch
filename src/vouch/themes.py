@@ -19,6 +19,7 @@ import yaml
 from .config_coerce import coerce_bool
 from .models import ClaimStatus, ProposalStatus
 from .proposals import ProposalError, propose_page
+from .scoping import ViewerContext, is_visible, viewer_from
 from .storage import KBStore
 
 logger = logging.getLogger(__name__)
@@ -96,11 +97,15 @@ def detect_themes(
     min_sessions: int | None = None,
     min_claims: int | None = None,
     top_k: int | None = None,
+    viewer: ViewerContext | None = None,
 ) -> DetectResult:
     """Detect recurring entity clusters across sessions.
 
     Pure read-only operation. Returns ranked clusters without persisting
-    anything. Excludes archived, superseded, redacted, and pending claims.
+    anything. Excludes archived, superseded, redacted, and pending claims,
+    and anything the viewer cannot retrieve — ``viewer`` defaults to the
+    config-resolved context, so a KB read with no explicit viewer reads as
+    its own project (see ``scoping.viewer_from``).
     """
     cfg = _load_theme_config(store)
     if not cfg["enabled"]:
@@ -113,11 +118,20 @@ def detect_themes(
     # Collect approved claims that reference entities and belong to sessions.
     claims = store.list_claims()
     # Also exclude pending (working) — only look at review-gated claims.
+    # Viewer-filtered for the same reason search/recall/salience are: a
+    # cluster is a list of claim ids and session ids, so an unfiltered scan
+    # hands a private or cross-project claim's id — and the session that
+    # produced it — to a viewer that cannot retrieve the claim itself. The
+    # leak is durable rather than advisory: `propose_theme` writes those ids
+    # into a theme page body that then lands in the KB on approval.
+    if viewer is None:
+        viewer = viewer_from(config_path=store.config_path)
     eligible = [
         c for c in claims
         if c.status not in _EXCLUDED_STATUSES
         and c.entities
         and c.approved_by is not None
+        and is_visible(c.scope, viewer)
     ]
 
     # Map each claim to its session(s) via decided proposals.
